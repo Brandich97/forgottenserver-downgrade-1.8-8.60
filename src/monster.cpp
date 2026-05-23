@@ -999,10 +999,6 @@ BlockType_t Monster::blockHit(const std::shared_ptr<Creature>& attacker, CombatT
 {
 	BlockType_t blockType = Creature::blockHit(attacker, combatType, damage, checkDefense, checkArmor, field, ignoreResistances);
 
-	if (field) {
-		ignoreFieldDamage = true;
-	}
-
 	if (damage != 0) {
 		int32_t elementMod = 0;
 		auto it = mType->info.elementMap.find(combatType);
@@ -1016,6 +1012,15 @@ BlockType_t Monster::blockHit(const std::shared_ptr<Creature>& attacker, CombatT
 				damage = 0;
 				blockType = BLOCK_ARMOR;
 			}
+		}
+	}
+
+	if (field) {
+		ignoreFieldDamage = true;
+	} else if (damage > 0 && combatType != COMBAT_HEALING && attacker) {
+		const auto master = attacker->getMaster();
+		if (attacker->getPlayer() || (master && master->getPlayer())) {
+			ignoreFieldDamage = true;
 		}
 	}
 
