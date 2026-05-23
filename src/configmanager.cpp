@@ -433,6 +433,9 @@ bool ConfigManager::load()
 	booleans[Boolean::DEFAULT_HEALTH_DISPLAY_PERCENT] =
 	    asLowerCaseString(getGlobalString(L, "defaultHealthDisplay", "real")) == "percent";
 	booleans[Boolean::ALLOW_DUAL_WIELDING] = getGlobalBoolean(L, "allowDualWielding", false);
+	booleans[Boolean::RAID_SPAWN_FILE_ENABLED] = getGlobalBoolean(L, "raidSpawnFileEnabled", true);
+	booleans[Boolean::RAID_SPAWN_FILE_INCLUDE_DIRECTION] =
+	    getGlobalBoolean(L, "raidSpawnFileIncludeDirection", false);
 
 	// Admin Config
 	booleans[Boolean::ADMIN_LOCALHOST_ONLY] = getGlobalBoolean(L, "adminLocalhostOnly", true);
@@ -582,6 +585,7 @@ bool ConfigManager::load()
 	integers[Integer::RATE_EXERCISE_TRAINING_SPEED] = getGlobalInteger(L, "rateExerciseTrainingSpeed", 1.0);
 	integers[Integer::DLL_CHECK_KICK_TIME] = getGlobalInteger(L, "dllCheckKickTime", 300);
 	integers[Integer::OFFLINE_TRAINING_THRESHOLD] = getGlobalInteger(L, "offlineTrainingThreshold", 600);
+	integers[Integer::RAID_SPAWN_FILE_SPAWNTIME] = getGlobalInteger(L, "raidSpawnFileSpawntime", 30);
 
 	integers[Integer::STATS_DUMP_INTERVAL] = getGlobalInteger(L, "statsDumpInterval", 30000);
 	integers[Integer::STATS_SLOW_LOG_TIME] = getGlobalInteger(L, "statsSlowLogTime", 10);

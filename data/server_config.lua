@@ -20,3 +20,10 @@ modifyDamageInK = false
 modifyExpInK = false
 defaultExpColor = "white"
 defaultHealthDisplay = "real"
+
+-- Raid spawn file generation
+-- When a raid in data/raids/raids.xml has spawnFile="file.xml", successful
+-- singlespawn/areaspawn monsters are exported to data/raids/file.xml.
+raidSpawnFileEnabled = true
+raidSpawnFileSpawntime = 30
+raidSpawnFileIncludeDirection = false

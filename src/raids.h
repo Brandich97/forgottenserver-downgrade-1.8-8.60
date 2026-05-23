@@ -25,6 +25,17 @@ struct MonsterSpawn
 	uint32_t maxAmount;
 };
 
+struct RaidSpawnFileEntry
+{
+	RaidSpawnFileEntry(std::string_view monsterName, const Position& position, Direction direction) :
+	    monsterName{monsterName}, position{position}, direction{direction}
+	{}
+
+	std::string monsterName;
+	Position position;
+	Direction direction;
+};
+
 // How many times it will try to find a tile to add the monster to before giving up
 inline constexpr int32_t MAXIMUM_TRIES_PER_MONSTER = 10;
 inline constexpr int32_t CHECK_RAIDS_INTERVAL = 60;
@@ -66,9 +77,12 @@ public:
 	LuaScriptInterface& getScriptInterface() { return scriptInterface; }
 
 private:
+	void clearCompletedRunningRaid();
+
 	LuaScriptInterface scriptInterface{"Raid Interface"};
 
 	std::list<std::unique_ptr<Raid>> raidList;
+	std::unique_ptr<Raid> runningNonRepeatRaid;
 	Raid* running = nullptr; // non-owning
 	uint64_t lastRaidEnd = 0;
 	uint32_t checkRaidsEvent = 0;
@@ -79,8 +93,8 @@ private:
 class Raid
 {
 public:
-	Raid(std::string_view name, uint32_t interval, uint32_t marginTime, bool repeat) :
-	    name{name}, interval{interval}, margin{marginTime}, repeat{repeat}
+	Raid(std::string_view name, uint32_t interval, uint32_t marginTime, bool repeat, std::string spawnFile) :
+	    name{name}, spawnFile{std::move(spawnFile)}, interval{interval}, margin{marginTime}, repeat{repeat}
 	{}
 	~Raid();
 
@@ -98,17 +112,22 @@ public:
 	RaidEvent* getNextRaidEvent();
 	void setState(RaidState_t newState) { state = newState; }
 	const std::string& getName() const { return name; }
+	const std::string& getSpawnFile() const { return spawnFile; }
 
 	bool isLoaded() const { return loaded; }
 	uint64_t getMargin() const { return margin; }
 	uint32_t getInterval() const { return interval; }
 	bool canBeRepeated() const { return repeat; }
 
+	void recordSpawnFileMonster(std::string_view monsterName, const Position& position, Direction direction);
+	void flushSpawnFile();
 	void stopEvents();
 
 private:
 	std::vector<std::unique_ptr<RaidEvent>> raidEvents;
+	std::vector<RaidSpawnFileEntry> spawnFileEntries;
 	std::string name;
+	std::string spawnFile;
 	uint32_t interval;
 	uint32_t nextEvent = 0;
 	uint64_t margin;
@@ -116,6 +135,7 @@ private:
 	uint32_t nextEventEvent = 0;
 	bool loaded = false;
 	bool repeat;
+	bool spawnFileRecording = false;
 };
 
 class RaidEvent
