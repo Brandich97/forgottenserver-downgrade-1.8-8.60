@@ -25,6 +25,7 @@ namespace {
 
 std::deque<std::pair<int64_t, uint32_t>> waitList; // (timeout, player guid)
 std::size_t priorityCount = 0;
+constexpr int64_t CAST_SWITCH_COOLDOWN_MS = 500;
 
 uint32_t getStatPercent(uint32_t current, uint32_t maximum)
 {
@@ -526,6 +527,7 @@ void ProtocolGame::onRecvFirstMessage(NetworkMessage& msg)
 	}
 
 	OperatingSystem_t operatingSystem = static_cast<OperatingSystem_t>(msg.get<uint16_t>());
+	clientOperatingSystem = operatingSystem;
 	version = msg.get<uint16_t>();
 
 	if (!Protocol::RSA_decrypt(msg)) {
@@ -740,10 +742,14 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 				g_dispatcher.addTask([thisPtr = getThis(), dir = recvbyte - 0x6F]() { thisPtr->spectatorTurn(dir); });
 				break;
 			case 0x70: // Turn East - used for Next Cast (CTRL + RIGHT)
-				g_dispatcher.addTask([thisPtr = getThis()]() { thisPtr->parseSwitchCast(uint8_t(1)); });
+				if (canProcessCastSwitch()) {
+					g_dispatcher.addTask([thisPtr = getThis()]() { thisPtr->parseSwitchCast(uint8_t(1)); });
+				}
 				break;
 			case 0x72: // Turn West - used for Prev Cast (CTRL + LEFT)
-				g_dispatcher.addTask([thisPtr = getThis()]() { thisPtr->parseSwitchCast(uint8_t(0)); });
+				if (canProcessCastSwitch()) {
+					g_dispatcher.addTask([thisPtr = getThis()]() { thisPtr->parseSwitchCast(uint8_t(0)); });
+				}
 				break;
 			case 0x8C: parseLookAt(msg); break; // Look at tile/item
 				break;
@@ -3554,6 +3560,31 @@ void ProtocolGame::sendCastChannel()
 	sendChannel(CHANNEL_CAST, "Cast Channel");
 }
 
+bool ProtocolGame::canProcessCastSwitch()
+{
+	const int64_t now = OTSYS_TIME();
+	if (now < nextCastSwitchTime) {
+		if (now >= nextCastSwitchCooldownMessageTime) {
+			sendTextMessage(MESSAGE_STATUS_SMALL, "You are switching casts too fast. Please wait before switching again.");
+			nextCastSwitchCooldownMessageTime = nextCastSwitchTime;
+		}
+		return false;
+	}
+
+	nextCastSwitchTime = now + CAST_SWITCH_COOLDOWN_MS;
+	nextCastSwitchCooldownMessageTime = 0;
+	return true;
+}
+
+bool ProtocolGame::shouldResyncCastChannelOnSwitch() const
+{
+	if (isOTC) {
+		return false;
+	}
+
+	return !isOtclientOperatingSystem(clientOperatingSystem);
+}
+
 void ProtocolGame::syncOpenContainers()
 {
 	const auto& openContainers = player->getOpenContainers();
@@ -3602,6 +3633,9 @@ void ProtocolGame::parseSwitchCast(uint8_t direction)
 				player->client->addSpectator(getThis());
 				sendAddCreature(player.get(), player->getPosition(), 0, CONST_ME_NONE);
 				syncOpenContainers();
+				if (shouldResyncCastChannelOnSwitch()) {
+					sendCastChannel();
+				}
 				player->client->sendCastMessage(spectator_name, spectator_name + " has joined the cast.", TALKTYPE_CHANNEL_O);
 				sendMagicEffect(player->getPosition(), CONST_ME_TELEPORT);
 			}
@@ -3634,6 +3668,9 @@ void ProtocolGame::parseSwitchCast(uint8_t direction)
 	player->client->addSpectator(getThis());
 	sendAddCreature(player.get(), player->getPosition(), 0, CONST_ME_NONE);
 	syncOpenContainers();
+	if (shouldResyncCastChannelOnSwitch()) {
+		sendCastChannel();
+	}
 	player->client->sendCastMessage(spectator_name, spectator_name + " has joined the cast.", TALKTYPE_CHANNEL_O);
 	sendMagicEffect(player->getPosition(), CONST_ME_TELEPORT);
 

@@ -288,6 +288,8 @@ private:
 	void parseSwitchCast(uint8_t direction); // 0 = previous, 1 = next
 	void sendWelcomeMessage();
 	void sendTextMessage(MessageClasses mclass, const std::string& message);
+	bool canProcessCastSwitch();
+	bool shouldResyncCastChannelOnSwitch() const;
 
 	bool isSpectator = false;
 	std::string spectator_name = "";
@@ -328,10 +330,13 @@ private:
 	bool isOTCv8 = false;
 	bool isMehah = false;
 	bool isOTC = false;
+	OperatingSystem_t clientOperatingSystem = CLIENTOS_NONE;
 	bool useItemTierByte = false;
 	bool debugAssertSent = false;
 	bool acceptPackets = false;
 	bool imbuementTrackerOpen = false;
+	int64_t nextCastSwitchTime = 0;
+	int64_t nextCastSwitchCooldownMessageTime = 0;
 
 	uint32_t dllCheckSequence = 0;
 
