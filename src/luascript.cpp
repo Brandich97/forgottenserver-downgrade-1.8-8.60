@@ -2815,6 +2815,7 @@ void LuaScriptInterface::registerFunctions()
 	registerEnumIn("configKeys", ConfigManager::RATE_EXERCISE_TRAINING_SPEED);
 	registerEnumIn("configKeys", ConfigManager::NPCS_USING_BANK_MONEY);
 	registerEnumIn("configKeys", ConfigManager::AUTOLOOT_AUTO_BANK);
+	registerEnumIn("configKeys", ConfigManager::AUTOLOOT_GOLD_POUCH);
 	registerEnumIn("configKeys", ConfigManager::BOOSTED_EXP_MULTIPLIER);
 	registerEnumIn("configKeys", ConfigManager::BOOSTED_LOOT_MULTIPLIER);
 	registerEnumIn("configKeys", ConfigManager::BOOSTED_SPAWN_MULTIPLIER);

@@ -5868,8 +5868,7 @@ void Player::lootCorpse(Container* container)
 	auto goldPouchDestination = autolootGoldPouchEnabled ? findGoldPouch() : nullptr;
 	auto storeInboxDestination = getStoreInbox();
 	if (goldPouchDestination && !storeInboxDestination) {
-		sendTextMessage(MESSAGE_EVENT_ORANGE, "Your store inbox is unavailable.");
-		return;
+		sendTextMessage(MESSAGE_EVENT_ORANGE, "Your store inbox is unavailable. Items will fall back to backpack.");
 	}
 
 	std::vector<std::pair<Item*, uint16_t>> toMove;
@@ -5890,6 +5889,7 @@ void Player::lootCorpse(Container* container)
 	std::vector<std::pair<Item*, uint64_t>> moneyItemsToDeposit;
 	std::unordered_set<Item*> queuedMoneyItems;
 	bool missingGoldPouchMessageSent = false;
+	bool skipCoinMessageSent = false;
 
 	auto moveAutolootItem = [&](Item* item) {
 		ReturnValue ret;
@@ -5961,13 +5961,22 @@ void Player::lootCorpse(Container* container)
 	for (const auto& pair : toMove) {
 		Item* item = pair.first;
 		const uint16_t itemId = item->getID();
-		const uint64_t value = static_cast<uint64_t>(item->getWorth());
+		const int64_t rawWorth = item->getWorth();
+		const uint64_t value = rawWorth > 0 ? static_cast<uint64_t>(rawWorth) : 0;
 		const bool isMoneyItem = moneyIds.contains(itemId) && value > 0;
 
 		if (isMoneyItem) {
 			queuedMoneyItems.insert(item);
 			if (!autolootConfig.goldEnabled) {
-				continue;
+				bool explicitlyListed = !autolootConfig.lootAnything &&
+				                        autolootConfig.itemList.find(item->getID()) != autolootConfig.itemList.end();
+				if (!explicitlyListed) {
+					if (!skipCoinMessageSent) {
+						sendTextMessage(MESSAGE_STATUS_SMALL, "AutoLoot: Coin collection is disabled. Use !autoloot gold to enable.");
+						skipCoinMessageSent = true;
+					}
+					continue;
+				}
 			}
 			if (autobankEnabled) {
 				moneyItemsToDeposit.emplace_back(item, value);
