@@ -138,8 +138,8 @@ public:
 
 	static void addDistanceEffect(Creature* caster, const Position& fromPos, const Position& toPos, uint16_t effect);
 
-	void doCombat(Creature* caster, Creature* target) const;
-	void doCombat(Creature* caster, const Position& position) const;
+	void doCombat(Creature* caster, Creature* target, std::string_view instantSpellName = {}) const;
+	void doCombat(Creature* caster, const Position& position, std::string_view instantSpellName = {}) const;
 
 	static void doTargetCombat(Creature* caster, Creature* target, CombatDamage& damage, const CombatParams& params);
 	static void doAreaCombat(Creature* caster, const Position& position, const AreaCombat* area, CombatDamage& damage,
@@ -165,7 +165,7 @@ public:
 	void setOrigin(CombatOrigin origin) { params.origin = origin; }
 
 	void setupChain(const class Weapon* weapon);
-	bool doCombatChain(Creature* caster, Creature* target, bool aggressive) const;
+	bool doCombatChain(Creature* caster, Creature* target, bool aggressive, std::string instantSpellName = {}) const;
 	void setChainCallback(uint8_t chainTargets, uint8_t chainDistance, bool backtracking);
 
 private:
@@ -178,7 +178,7 @@ private:
 
 	static void combatTileEffects(const SpectatorVec& spectators, Creature* caster, Tile* tile,
 	                              const CombatParams& params);
-	CombatDamage getCombatDamage(Creature* creature, Creature* target) const;
+	CombatDamage getCombatDamage(Creature* creature, Creature* target, std::string_view instantSpellName) const;
 
 	// configurable
 	CombatParams params;

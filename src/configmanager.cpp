@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 #include <fstream>
+#include <charconv>
 
 #if LUA_VERSION_NUM >= 502
 #undef lua_strlen
@@ -448,6 +449,7 @@ bool ConfigManager::load()
 	booleans[Boolean::MARKET_SYSTEM_ENABLED] = getGlobalBoolean(L, "marketSystemEnabled", false);
 	booleans[Boolean::PREY_SYSTEM_ENABLED] = getGlobalBoolean(L, "preySystemEnabled", false);
 	booleans[Boolean::WEAPON_PROFICIENCY_SYSTEM_ENABLED] = getGlobalBoolean(L, "weaponProficiencySystemEnabled", false);
+	booleans[Boolean::AUGMENT_SYSTEM_ENABLED] = getGlobalBoolean(L, "augmentSystemEnabled", false);
 	booleans[Boolean::MONSTER_LEVEL_ENABLED] = getGlobalBoolean(L, "monsterLevelEnabled", false);
 	booleans[Boolean::LOOT_GROUPING_ENABLED] = getGlobalBoolean(L, "lootGroupingEnabled", true);
 	booleans[Boolean::ALLOW_MOUNT_IN_PZ] = getGlobalBoolean(L, "allowMountInPz", false);
@@ -658,6 +660,9 @@ bool ConfigManager::load()
 	integers[Integer::RAID_SPAWN_FILE_DIRECTION] = getGlobalInteger(L, "raidSpawnFileDirection", 2);
 	integers[Integer::POWER_LAW_SKILL_THRESHOLD] = getGlobalInteger(L, "powerLawSkillThreshold", 0);
 	integers[Integer::POWER_LAW_MAGIC_THRESHOLD] = getGlobalInteger(L, "powerLawMagicThreshold", 0);
+	integers[Integer::AUGMENT_INCREASED_DAMAGE_PERCENT] = getGlobalInteger(L, "augmentIncreasedDamagePercent", 5);
+	integers[Integer::AUGMENT_POWERFUL_IMPACT_PERCENT] = getGlobalInteger(L, "augmentPowerfulImpactPercent", 7);
+	integers[Integer::AUGMENT_STRONG_IMPACT_PERCENT] = getGlobalInteger(L, "augmentStrongImpactPercent", 10);
 
 	strings[String::ADMIN_PASSWORD] = getGlobalString(L, "adminPassword", "");
 	strings[String::ADMIN_ENCRYPTION] = getGlobalString(L, "adminEncryption", "");

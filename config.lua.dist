@@ -143,7 +143,13 @@ bestiarySystemEnabled = false
 marketSystemEnabled = false
 preySystemEnabled = false
 weaponProficiencySystemEnabled = false
+augmentSystemEnabled = false
 monsterLevelEnabled = false
+
+-- Static item augment defaults. Item-specific values can override these in items.xml.
+augmentIncreasedDamagePercent = 5
+augmentPowerfulImpactPercent = 7
+augmentStrongImpactPercent = 10
 
 -- Configuration to allow mounting in Protection Zone (PZ)
 -- true = allows mounting in PZ, false = disables mounting in PZ (default behavior)

@@ -36,6 +36,13 @@ bool spellsIsFamiliarSpell(std::string_view name)
 {
 	return name.find("Familiar") != std::string_view::npos || name.find("familiar") != std::string_view::npos;
 }
+
+int32_t saturatingAdd(int32_t value, int64_t increase)
+{
+	return static_cast<int32_t>(std::clamp<int64_t>(static_cast<int64_t>(value) + increase,
+	                                               std::numeric_limits<int32_t>::min(),
+	                                               std::numeric_limits<int32_t>::max()));
+}
 } // namespace
 
 Spells::Spells() { scriptInterface.initState(); }
@@ -584,11 +591,170 @@ bool Spell::playerRuneSpellCheck(Player* player, const Position& toPos)
 	return true;
 }
 
+void Spell::getCombatDataAugment(const std::shared_ptr<Player>& player, CombatDamage& damage) const
+{
+	const bool augmentSystemEnabled = ConfigManager::getBoolean(ConfigManager::AUGMENT_SYSTEM_ENABLED);
+	const bool wheelSystemEnabled = ConfigManager::getBoolean(ConfigManager::WHEEL_SYSTEM_ENABLED);
+	if ((!augmentSystemEnabled && !wheelSystemEnabled) || !player) {
+		return;
+	}
+
+	if (augmentSystemEnabled && !damage.instantSpellName.empty()) {
+		for (const auto& item : player->getEquippedAugmentItems()) {
+			for (const auto& augment : item->getAugmentsBySpellName(damage.instantSpellName)) {
+				if (!augment || augment->value == 0) {
+					continue;
+				}
+
+				switch (augment->type) {
+					case Augment_t::BaseDamage:
+					case Augment_t::BaseHealing:
+					case Augment_t::IncreasedDamage:
+					case Augment_t::PowerfulImpact:
+					case Augment_t::StrongImpact: {
+						const double percent = augment->value / 100.0;
+						damage.primary.value = saturatingAdd(damage.primary.value, damage.primary.value * percent);
+						damage.secondary.value = saturatingAdd(damage.secondary.value, damage.secondary.value * percent);
+						break;
+					}
+
+					case Augment_t::LifeLeech:
+						damage.lifeLeech = saturatingAdd(damage.lifeLeech, static_cast<int64_t>(augment->value) * 100);
+						break;
+
+					case Augment_t::ManaLeech:
+						damage.manaLeech = saturatingAdd(damage.manaLeech, static_cast<int64_t>(augment->value) * 100);
+						break;
+
+					case Augment_t::CriticalExtraDamage:
+						damage.criticalDamage =
+						    saturatingAdd(damage.criticalDamage, static_cast<int64_t>(augment->value) * 100);
+						break;
+
+					case Augment_t::CriticalHitChance:
+						damage.criticalChance =
+						    saturatingAdd(damage.criticalChance, static_cast<int64_t>(augment->value) * 100);
+						break;
+
+					default:
+						break;
+				}
+			}
+		}
+	}
+
+	const auto applyBonus = [&damage](const ProficiencySpellAugmentBonus& bonus) {
+		const int32_t percent = damage.primary.type == COMBAT_HEALING ? bonus.healingPercent : bonus.damagePercent;
+		if (percent != 0) {
+			const double multiplier = percent / 100.0;
+			damage.primary.value = saturatingAdd(damage.primary.value, damage.primary.value * multiplier);
+			damage.secondary.value = saturatingAdd(damage.secondary.value, damage.secondary.value * multiplier);
+		}
+		damage.lifeLeech = saturatingAdd(damage.lifeLeech, bonus.lifeLeech);
+		damage.manaLeech = saturatingAdd(damage.manaLeech, bonus.manaLeech);
+		damage.criticalDamage = saturatingAdd(damage.criticalDamage, bonus.criticalDamage);
+		damage.criticalChance = saturatingAdd(damage.criticalChance, bonus.criticalChance);
+	};
+
+	if (augmentSystemEnabled) {
+		applyBonus(player->getProficiencySpellAugmentBonus(getId()));
+	}
+	if (wheelSystemEnabled) {
+		applyBonus(player->getWheelSpellAugmentBonus(getName()));
+	}
+}
+
+int32_t Spell::calculateAugmentSpellCooldownReduction(const std::shared_ptr<Player>& player) const
+{
+	const bool augmentSystemEnabled = ConfigManager::getBoolean(ConfigManager::AUGMENT_SYSTEM_ENABLED);
+	const bool wheelSystemEnabled = ConfigManager::getBoolean(ConfigManager::WHEEL_SYSTEM_ENABLED);
+	if ((!augmentSystemEnabled && !wheelSystemEnabled) || !player) {
+		return 0;
+	}
+
+	int32_t reduction = 0;
+	if (augmentSystemEnabled) {
+		for (const auto& item : player->getEquippedAugmentItemsByType(Augment_t::Cooldown)) {
+			for (const auto& augment : item->getAugmentsBySpellNameAndType(getName(), Augment_t::Cooldown)) {
+				if (augment && augment->value > 0) {
+					reduction = saturatingAdd(reduction, augment->value);
+				}
+			}
+		}
+		reduction = saturatingAdd(reduction, player->getProficiencySpellAugmentBonus(getId()).cooldownReduction);
+	}
+	if (wheelSystemEnabled) {
+		reduction = saturatingAdd(reduction, player->getWheelSpellAugmentBonus(getName()).cooldownReduction);
+	}
+	return reduction;
+}
+
+int32_t Spell::calculateAugmentSpellSecondaryGroupCooldownReduction(const std::shared_ptr<Player>& player) const
+{
+	const bool augmentSystemEnabled = ConfigManager::getBoolean(ConfigManager::AUGMENT_SYSTEM_ENABLED);
+	const bool wheelSystemEnabled = ConfigManager::getBoolean(ConfigManager::WHEEL_SYSTEM_ENABLED);
+	if ((!augmentSystemEnabled && !wheelSystemEnabled) || !player) {
+		return 0;
+	}
+
+	int32_t reduction = 0;
+	if (augmentSystemEnabled) {
+		for (const auto& item : player->getEquippedAugmentItemsByType(Augment_t::SecondaryGroupCooldown)) {
+			for (const auto& augment :
+			     item->getAugmentsBySpellNameAndType(getName(), Augment_t::SecondaryGroupCooldown)) {
+				if (augment && augment->value > 0) {
+					reduction = saturatingAdd(reduction, augment->value);
+				}
+			}
+		}
+		reduction =
+		    saturatingAdd(reduction, player->getProficiencySpellAugmentBonus(getId()).secondaryGroupCooldownReduction);
+	}
+	if (wheelSystemEnabled) {
+		reduction =
+		    saturatingAdd(reduction, player->getWheelSpellAugmentBonus(getName()).secondaryGroupCooldownReduction);
+	}
+	return reduction;
+}
+
+int32_t Spell::calculateAugmentSpellManaCostReduction(const Player* player) const
+{
+	const bool augmentSystemEnabled = ConfigManager::getBoolean(ConfigManager::AUGMENT_SYSTEM_ENABLED);
+	const bool wheelSystemEnabled = ConfigManager::getBoolean(ConfigManager::WHEEL_SYSTEM_ENABLED);
+	if ((!augmentSystemEnabled && !wheelSystemEnabled) || !player) {
+		return 0;
+	}
+
+	int32_t reduction = 0;
+	if (augmentSystemEnabled) {
+		for (const auto& item : player->getEquippedAugmentItemsByType(Augment_t::ManaCost)) {
+			for (const auto& augment : item->getAugmentsBySpellNameAndType(getName(), Augment_t::ManaCost)) {
+				if (augment && augment->value > 0) {
+					reduction = saturatingAdd(reduction, augment->value);
+				}
+			}
+		}
+		reduction = saturatingAdd(reduction, player->getProficiencySpellAugmentBonus(getId()).manaCostPercent);
+	}
+	if (wheelSystemEnabled) {
+		reduction = saturatingAdd(reduction, player->getWheelSpellAugmentBonus(getName()).manaCostPercent);
+	}
+	return std::clamp(reduction, 0, 100);
+}
+
 void Spell::postCastSpell(Player* player, bool finishedCast /*= true*/, bool payCost /*= true*/) const
 {
 	if (finishedCast) {
         if (!player->hasFlag(PlayerFlag_HasNoExhaustion)) {
             int32_t momentumReduction = 0;
+            int32_t augmentCooldownReduction = 0;
+            int32_t augmentSecondaryGroupCooldownReduction = 0;
+
+            if (const auto playerRef = std::dynamic_pointer_cast<Player>(player->weak_from_this().lock())) {
+                augmentCooldownReduction = calculateAugmentSpellCooldownReduction(playerRef);
+                augmentSecondaryGroupCooldownReduction =
+                    calculateAugmentSpellSecondaryGroupCooldownReduction(playerRef);
+            }
 
             Item* helmet = player->getInventoryItem(CONST_SLOT_HEAD);
             if (helmet && helmet->getTier() > 0) {
@@ -607,7 +773,8 @@ void Spell::postCastSpell(Player* player, bool finishedCast /*= true*/, bool pay
             }
 
             if (cooldown > 0) {
-                int32_t adjustedCooldown = std::max<int32_t>(1000, static_cast<int32_t>(cooldown) - momentumReduction);
+                int32_t adjustedCooldown =
+                    std::max<int32_t>(1000, static_cast<int32_t>(cooldown) - momentumReduction - augmentCooldownReduction);
                 auto condition = Condition::createCondition(CONDITIONID_DEFAULT, CONDITION_SPELLCOOLDOWN,
                                                             adjustedCooldown, 0, false, spellId);
                 player->addCondition(std::move(condition));
@@ -621,7 +788,9 @@ void Spell::postCastSpell(Player* player, bool finishedCast /*= true*/, bool pay
             }
 
             if (secondaryGroupCooldown > 0) {
-                int32_t adjustedSecondaryGroupCooldown = std::max<int32_t>(1000, static_cast<int32_t>(secondaryGroupCooldown) - momentumReduction);
+                int32_t adjustedSecondaryGroupCooldown =
+                    std::max<int32_t>(1000, static_cast<int32_t>(secondaryGroupCooldown) - momentumReduction -
+                                               augmentSecondaryGroupCooldownReduction);
                 auto condition = Condition::createCondition(CONDITIONID_DEFAULT, CONDITION_SPELLGROUPCOOLDOWN,
                                                             adjustedSecondaryGroupCooldown, 0, false, secondaryGroup);
                 player->addCondition(std::move(condition));
@@ -658,17 +827,22 @@ void Spell::postCastSpell(Player* player, uint32_t manaCost, uint32_t soulCost)
 
 uint32_t Spell::getManaCost(const Player* player) const
 {
+	uint32_t manaCost = 0;
 	if (mana != 0) {
-		return mana;
+		manaCost = mana;
+	} else if (manaPercent != 0) {
+		uint32_t maxMana = player->getMaxMana();
+		manaCost = (maxMana * manaPercent) / 100;
 	}
 
-	if (manaPercent != 0) {
-		uint32_t maxMana = player->getMaxMana();
-		uint32_t manaCost = (maxMana * manaPercent) / 100;
+	if (manaCost == 0 ||
+	    (!ConfigManager::getBoolean(ConfigManager::AUGMENT_SYSTEM_ENABLED) &&
+	     !ConfigManager::getBoolean(ConfigManager::WHEEL_SYSTEM_ENABLED))) {
 		return manaCost;
 	}
 
-	return 0;
+	const int32_t reduction = calculateAugmentSpellManaCostReduction(player);
+	return static_cast<uint32_t>(std::lround(manaCost * ((100.0 - reduction) / 100.0)));
 }
 
 std::string_view InstantSpell::getScriptEventName() const { return "onCastSpell"; }
@@ -680,6 +854,7 @@ bool InstantSpell::playerCastInstant(Player* player, std::string& param)
 	}
 
 	LuaVariant var;
+	var.instantName = getName();
 
 	if (selfTarget) {
 		var.setNumber(player->getID());
@@ -833,6 +1008,7 @@ bool InstantSpell::canThrowSpell(const Creature* creature, const Creature* targe
 bool InstantSpell::castSpell(Creature* creature)
 {
 	LuaVariant var;
+	var.instantName = getName();
 
 	if (casterTargetOrDirection) {
 		auto target = creature->getAttackedCreatureShared();
@@ -859,6 +1035,7 @@ bool InstantSpell::castSpell(Creature* creature, Creature* target)
 {
 	if (needTarget) {
 		LuaVariant var;
+		var.instantName = getName();
 		var.setNumber(target->getID());
 		return internalCastSpell(creature, var);
 	}
