@@ -83,3 +83,30 @@ function ItemType:getWeaponString()
 
 	return weaponString
 end
+
+function ItemType:getWeightDescription(count)
+    count = count or 1
+    local weight = self:getWeight(count)
+    if weight == 0 then
+        return ""
+    end
+
+    local ss = StringStream()
+    if self:isStackable() and count > 1 and self:hasShowCount() then
+        ss:append("They weigh ")
+    else
+        ss:append("It weighs ")
+    end
+
+    if weight < 10 then
+        ss:append("0.0%d", weight)
+    elseif weight < 100 then
+        ss:append("0.%d", weight)
+    else
+        local weightString = tostring(weight)
+        ss:append("%s.%s", weightString:sub(1, -3), weightString:sub(-2))
+    end
+
+    ss:append(" oz.")
+    return ss:concat()
+end

@@ -69,7 +69,7 @@ function talkaction.onSay(player, words, param)
 	if hasEvent.onReload then Event.onReload(player, reloadType) end
 
 	-- need to clear EventCallback.data or we end up having duplicated events on /reload scripts
-	if table.contains({RELOAD_TYPE_SCRIPTS, RELOAD_TYPE_ALL}, reloadType) then
+	if table.contains({ RELOAD_TYPE_SCRIPTS, RELOAD_TYPE_GLOBAL, RELOAD_TYPE_ALL }, reloadType) then
 		Event:clear()
 		Game.clearQuests()
 	end
