@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-using ReactorCallback = std::move_only_function<void()>;
+using ReactorCallback = std::function<void()>;
 
 class TaskReactor
 {

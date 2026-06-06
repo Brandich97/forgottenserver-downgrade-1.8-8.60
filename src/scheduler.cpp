@@ -38,8 +38,9 @@ uint32_t Scheduler::addEvent(std::unique_ptr<SchedulerTask> task)
 		return 0;
 	}
 
-	const uint32_t eventId = g_reactor.schedule(task->getDelay(), [task = std::move(task)]() mutable {
-		g_dispatcher.executeTask(std::move(task));
+	auto sharedTask = std::make_shared<std::unique_ptr<SchedulerTask>>(std::move(task));
+	const uint32_t eventId = g_reactor.schedule((*sharedTask)->getDelay(), [sharedTask]() {
+		g_dispatcher.executeTask(std::move(*sharedTask));
 	});
 
 	return eventId;

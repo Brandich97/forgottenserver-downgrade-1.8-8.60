@@ -75,7 +75,8 @@ void Dispatcher::addTask(std::unique_ptr<Task> task)
 		return;
 	}
 
-	g_reactor.send([this, task = std::move(task)]() mutable { executeTask(std::move(task)); });
+	auto sharedTask = std::make_shared<std::unique_ptr<Task>>(std::move(task));
+	g_reactor.send([this, sharedTask]() { executeTask(std::move(*sharedTask)); });
 }
 
 void Dispatcher::executeTask(std::unique_ptr<Task> task)
