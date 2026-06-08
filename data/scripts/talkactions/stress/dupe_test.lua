@@ -46,14 +46,17 @@
 -- ============================================================================
 -- CONFIGURAÇÃO  –  ajuste para o seu servidor
 -- ============================================================================
+-- Itens de teste - use IDs que não interfiram com inventário real.
+-- Se o servidor tiver itens QA/debug, defina QA_ITEM_NS e QA_ITEM_ST abaixo.
+local QA_ITEM_NS = 3280   -- Fire Sword (troque por um ID de item QA/debug)
+local QA_ITEM_ST = 3031   -- Gold Coin (troque por um ID de item QA/debug)
+
 local CFG = {
-    -- Item NÃO-stackável de teste (qualquer item simples serve)
-    -- 3280 = Fire Sword;
-    item_ns       = 3280,
+    -- Item NÃO-stackável de teste
+    item_ns       = QA_ITEM_NS,
 
     -- Item STACKÁVEL de teste
-    -- 3031 = Gold Coin
-    item_st       = 3031,
+    item_st       = QA_ITEM_ST,
 
     -- Número de saves rápidos por fase de flood
     save_burst    = 8,
@@ -138,10 +141,15 @@ local function logSummary(player, msg, hasFailed)
     end
 end
 
-local function safePlayer(pid)
+local function safePlayer(pid, expectedGuid)
     local p = Player(pid)
     if not p then
         print("[DupeTest] Player id=" .. tostring(pid) .. " desconectou durante o teste.")
+        return nil
+    end
+    if expectedGuid and p:getGuid() ~= expectedGuid then
+        print("[DupeTest] Player id=" .. tostring(pid) .. " GUID mismatch (PID reciclado?). ignorando.")
+        return nil
     end
     return p
 end
@@ -173,6 +181,43 @@ end
 -- Remove todos os itens de um tipo do inventário (safety cleanup)
 local function safeRemoveAll(player, itemTypeId)
     player:removeItem(itemTypeId, 100000)
+end
+
+-- Tenta verificar condição com retry em vez de delay fixo.
+--   checkFn: retorna true se a verificação passou, false se falhou
+--   onPass(attempt): chamado quando checkFn retorna true
+--   onFail(finalAttempt): chamado após exaurir maxRetries
+--   initialDelay: primeiro delay antes de tentar (ms)
+--   retryInterval: intervalo entre retries (ms)
+--   maxRetries: número máximo de tentativas (default 3)
+local function verifyWithRetry(checkFn, onPass, onFail, initialDelay, retryInterval, maxRetries)
+    maxRetries = maxRetries or 3
+    retryInterval = retryInterval or 800
+    local attempt = 0
+
+    local function tryVerify()
+        attempt = attempt + 1
+        if checkFn(attempt) then
+            onPass(attempt)
+        elseif attempt < maxRetries then
+            addEvent(tryVerify, retryInterval)
+        else
+            onFail(attempt)
+        end
+    end
+
+    addEvent(tryVerify, initialDelay)
+end
+
+-- Verifica se o player já possui itens dos tipos de teste no inventário
+-- Retorna true se houver itens pré-existentes (risco de mistura)
+local function hasPreExistingTestItems(player, guid)
+    local cntNS = countItemsInDB(guid, QA_ITEM_NS)
+    local cntST = sumStackInDB(guid, QA_ITEM_ST)
+    if cntNS > 0 or cntST > 0 then
+        return true
+    end
+    return false
 end
 
 -- ============================================================================
@@ -222,7 +267,7 @@ local function runPhase1(player)
 
     -- Verifica DB
     addEvent(function(pid2, guid2, tId)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cnt = countItemsInDB(guid2, tId)
@@ -290,31 +335,43 @@ local function runPhase2(player)
     local s2 = player:save()
 
     logInfo(player, string.format(
-        "Phase 2: S1=%s S2=%s | Dois saves enfileirados. Verificando DB em %dms...",
-        tostring(s1), tostring(s2), CFG.verify_delay
+        "Phase 2: S1=%s S2=%s | Dois saves enfileirados. Verificando DB com retry...",
+        tostring(s1), tostring(s2)
     ))
 
-    addEvent(function(pid2, guid2, tId)
-        local p = safePlayer(pid2)
-        if not p then return end
-
-        local cnt = countItemsInDB(guid2, tId)
-
-        if cnt == 0 then
-            logPass(p, "Phase 2: DB=0 - S2 (sem item) foi o estado final. FIFO ordering OK. Sem dupe risk.")
-        elseif cnt > 0 then
-            logFail(p, string.format(
-                "Phase 2: DB=%d (esperado 0) - ## DUPE BUG CONFIRMADO ##", cnt
+    verifyWithRetry(
+        function()
+            local p = safePlayer(pid, guid)
+            if not p then return false end
+            return countItemsInDB(guid, typeId) == 0
+        end,
+        function(attempt)
+            local p = safePlayer(pid, guid)
+            if not p then return end
+            logPass(p, string.format(
+                "Phase 2: DB=0 (attempt %d) - S2 (sem item) foi o estado final. FIFO ordering OK.",
+                attempt
             ))
-            logFail(p, "  -> S1 {item presente} executou APOS S2 {item removido} no worker thread.")
-            logFail(p, "  -> Player relogando teria o item de volta no inventario = ITEM DUPLICADO!")
-            logFail(p, "  -> Fix: garantir FIFO em SaveManager::onPlayerFlushed + pendingFlushes drain.")
-            safeRemoveAll(p, tId)
-            p:save()
-        else
-            logFail(p, "Phase 2: Falha na query DB. Verifique conexão e tabela player_items.")
-        end
-    end, CFG.verify_delay, pid, guid, typeId)
+        end,
+        function(attempt)
+            local p = safePlayer(pid, guid)
+            if not p then return end
+            local cnt = countItemsInDB(guid, typeId)
+            if cnt > 0 then
+                logFail(p, string.format(
+                    "Phase 2: DB=%d (esperado 0) apos %d tentativas - ## DUPE BUG CONFIRMADO ##", cnt, attempt
+                ))
+                logFail(p, "  -> S1 {item presente} executou APOS S2 {item removido} no worker thread.")
+                logFail(p, "  -> Player relogando teria o item de volta no inventario = ITEM DUPLICADO!")
+                logFail(p, "  -> Fix: garantir FIFO em SaveManager::onPlayerFlushed + pendingFlushes drain.")
+                safeRemoveAll(p, typeId)
+                p:save()
+            else
+                logFail(p, "Phase 2: Falha na query DB. Verifique conexão e tabela player_items.")
+            end
+        end,
+        CFG.verify_delay, 800, 3
+    )
 
     return true
 end
@@ -352,7 +409,7 @@ local function runPhase3(player)
     player:save()
 
     addEvent(function(pid2, guid2, tId, qty)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         -- 3a: verifica SUM apos add+save
@@ -372,7 +429,7 @@ local function runPhase3(player)
         p:save()
 
         addEvent(function(pid3, guid3, tId3, expected, removed)
-            local p3 = safePlayer(pid3)
+            local p3 = safePlayer(pid3, guid3)
             if not p3 then return end
 
             local sumB = sumStackInDB(guid3, tId3)
@@ -447,7 +504,7 @@ local function runPhase4(player)
 
     local verifyAt = rounds * roundMs + CFG.verify_delay
     addEvent(function(pid2, guid2, tId, n)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cnt = countItemsInDB(guid2, tId)
@@ -517,7 +574,7 @@ local function runPhase5(player)
     end, 80, pid, typeId)
 
     addEvent(function(pid2, guid2, tId, n)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cnt = countItemsInDB(guid2, tId)
@@ -594,7 +651,7 @@ local function runPhase6(player)
     ))
 
     addEvent(function(pid2, guid2, tA, tB)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cntA = countItemsInDB(guid2, tA)
@@ -676,7 +733,7 @@ local function runPhase7(player)
     player:save()
 
     addEvent(function(pid2, guid2, tId, expected)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cnt = countItemsInDB(guid2, tId)
@@ -777,7 +834,7 @@ local function runPhase8(player)
 
     -- Verifica
     addEvent(function(pid2, guid2, tId, nA, nB)
-        local p = safePlayer(pid2)
+        local p = safePlayer(pid2, guid2)
         if not p then return end
 
         local cnt = countItemsInDB(guid2, tId)
@@ -869,9 +926,29 @@ function dupeAction.onSay(player, words, param)
             log(player, "Teste em andamento – aguarde conclusão antes de iniciar nova fase.")
             return false
         end
+        if hasPreExistingTestItems(player, player:getGuid()) then
+            logFail(player, string.format(
+                "Inventário já contém itens dos tipos %d e/ou %d. Use !dupetest clean primeiro.",
+                QA_ITEM_NS, QA_ITEM_ST
+            ))
+            return false
+        end
         local fn = phaseMap[phaseNum]
         if fn then
-            fn(player)
+            activeRun = true
+            local ok, err = xpcall(fn, debug.traceback, player)
+            if not ok then
+                logFail(player, "Fase " .. phaseNum .. " encontrou erro: " .. tostring(err))
+                activeRun = false
+            else
+                local maxDuration = math.max(
+                    CFG.save_burst * CFG.stagger_ms + 100 + CFG.verify_delay + 500,
+                    CFG.verify_delay + 800 * 3 + 500,
+                    2 * CFG.verify_delay + 800,
+                    5 * 300 + CFG.verify_delay + 500
+                ) + 500
+                addEvent(function() activeRun = false end, maxDuration)
+            end
         else
             player:sendTextMessage(MSG_BLUE, "Fase inválida. Use 1-8, start, info ou clean.")
         end
@@ -882,6 +959,13 @@ function dupeAction.onSay(player, words, param)
     if cmd == "" or cmd == "start" or cmd == "all" then
         if activeRun then
             log(player, "DupeTest já em andamento – aguarde conclusão.")
+            return false
+        end
+        if hasPreExistingTestItems(player, player:getGuid()) then
+            logFail(player, string.format(
+                "Inventário já contém itens dos tipos %d e/ou %d. Use !dupetest clean primeiro.",
+                QA_ITEM_NS, QA_ITEM_ST
+            ))
             return false
         end
         activeRun = true

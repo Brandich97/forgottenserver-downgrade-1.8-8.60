@@ -485,39 +485,59 @@ end
     ► GC overhead: Se Lua GC não rodar entre rodadas, acumula lixo; sweep
       gigante no final causa pause longo.
 --]]
+local LEAK_MEM_THRESHOLD_KB = 1024  -- Max allowed memory growth per round (KB); adjust if false positives occur
+
 local function runLeakTest(player, rounds)
     local start = os.clock()
 
+    -- Sample memory before rounds
+    collectgarbage("collect")
+    local memBefore = collectgarbage("count")
+    local maxDelta = 0
+
     for round = 1, rounds do
-        -- Cada rodada cria 10k mensagens
         for i = 1, 10000 do
-            -- Cria NetworkMessage
             local msg = NetworkMessage()
-            
-            -- Escreve dados (valida objeto utilizável)
             msg:addString("Leak Test")
-            
-            -- Descarta imediatamente
             msg = nil
         end
-
-        -- Força GC sweep ao final de cada rodada (evita acúmulo entre rounds)
         collectgarbage("collect")
+        local memAfter = collectgarbage("count")
+        local delta = memAfter - memBefore
+        if delta > maxDelta then
+            maxDelta = delta
+        end
     end
 
     local elapsed = os.clock() - start
     local totalMsgs = rounds * 10000
+    local memAfterFinal = collectgarbage("count")
+    local totalDelta = memAfterFinal - memBefore
 
-    logPass(
-        player,
-        string.format(
-            "LEAK: %d rounds completed in %.3f sec (%d total msgs | %.0f msgs/sec)",
-            rounds,
-            elapsed,
-            totalMsgs,
-            totalMsgs / (elapsed + 1e-9)
+    if totalDelta > LEAK_MEM_THRESHOLD_KB then
+        logFail(
+            player,
+            string.format(
+                "LEAK: %d rounds in %.3f sec | mem growth %.0f KB (threshold %d KB) - possible leak!",
+                rounds,
+                elapsed,
+                totalDelta,
+                LEAK_MEM_THRESHOLD_KB
+            )
         )
-    )
+    else
+        logPass(
+            player,
+            string.format(
+                "LEAK: %d rounds completed in %.3f sec (%d total msgs | %.0f msgs/sec | mem delta %.0f KB)",
+                rounds,
+                elapsed,
+                totalMsgs,
+                totalMsgs / (elapsed + 1e-9),
+                totalDelta
+            )
+        )
+    end
 end
 
 -- ============================================================================
@@ -589,47 +609,42 @@ local function runSendTest(player, amount)
 end
 
 -- ============================================================================
--- TESTE 6: CONCURRENT - Alocações simultâneas multi-threaded
+-- TESTE 6: CONCURRENT - Alocações multi-threaded (throughput)
 -- ============================================================================
 --[[
+  ATENÇÃO: addEvent(0) tasks no TFS são enfileiradas e executadas
+  SEQUENCIALMENTE pelo dispatcher da main thread. Este teste mede throughput
+  de alocações sequenciais, NÃO concurrência real. Para validar thread-safety
+  do LockfreePoolingAllocator, são necessários testes em C++ com threads reais
+  ou simulação externa de carga concorrente.
+  
   Objetivo:
-    Testar o LockfreePoolingAllocator sob carga concorrente, validando que
-    operações lock-free (CAS) funcionam corretamente sem race conditions.
+    Medir throughput do pool allocator quando múltiplos workers são simulados
+    via addEvent(0) - as tarefas executam em série, mas o padrão de alocação/
+    destruição é útil para detectar degradação de performance.
   
   O que está sendo testado:
-    • Thread-safety do freelist (compare-and-swap operations)
-    • Contenção entre múltiplos workers acessando o pool simultaneamente
-    • Ausência de race conditions durante allocate() / deallocate()
-    • Performance do pool sob carga paralela real
+    • Throughput do pool sob padrão de carga "concorrente simulado"
+    • Ausência de crashes durante alocação/destruição em sequência rápida
   
   Fluxo:
-    1. Dispara N workers simultâneos via addEvent(0)
+    1. Dispara N workers via addEvent(0)
     2. Cada worker cria M mensagens independentemente
-    3. Todos workers escrevem dados e destroem mensagens
-    4. Mede tempo total até último worker completar
+    3. Mede tempo total até último worker completar
   
   Métricas:
     - Tempo total de todos workers (segundos)
     - Throughput agregado (msgs/sec de todos workers)
-    - Detecção de crashes por race condition
   
-  PASS se: Nenhum crash. Tempo razoável. Throughput ~linear com workers.
-  FAIL se: Crash (race condition). Deadlock. Throughput sub-linear severo.
-  
-  Gargalos possíveis:
-    ► CAS contention: Se muitos threads competirem pelo mesmo slot do freelist,
-      CAS pode fazer spin excessivo (retry loop).
-    ► False sharing: Cache line bouncing entre CPUs pode degradar performance.
-    ► Lock-free overhead: Em cenários extremos, lock-free pode ser mais lento
-      que mutex simples devido a retries.
-  
-  CRÍTICO: Este é o ÚNICO teste que valida thread-safety do pool allocator!
+  LIMITAÇÃO CONHECIDA:
+    Não testa true multi-threading. addEvent(0) executa na main thread.
 --]]
 local function runConcurrentTest(player, workers, msgsPerWorker)
     local startTime = os.clock()
     local completed = 0
     local totalMsgs = workers * msgsPerWorker
     
+    logInfo(player, "CONCURRENT: ATENCAO - addEvent(0) roda na main thread (sequencial), nao simula true concorrencia.")
     logInfo(player, string.format(
         "CONCURRENT: Dispatching %d workers (%d msgs each = %d total)...",
         workers, msgsPerWorker, totalMsgs
@@ -1097,9 +1112,9 @@ end
 -- ============================================================================
 --[[
   Objetivo:
-    Executar todos os testes (CREATE, GC, POOL, LEAK) em sequência e consolidar
-    resultados num relatório final. Ideal para comparar performance antes/depois
-    da commit de shared_ptr pooling.
+    Executar todos os testes (CREATE, GC, POOL, LEAK, SEND, ...) em sequência
+    reutilizando as funções compartilhadas dos testes individuais e consolidando
+    resultados num relatório final.
   
   O que está sendo testado:
     • Mesmas áreas dos testes individuais (ver documentação de cada função)
@@ -1109,27 +1124,177 @@ end
   Fluxo:
     1. Executa CREATE test com SUITE_CREATE_AMOUNT
     2. Executa GC test com SUITE_GC_AMOUNT
-    3. Executa POOL test com SUITE_POOL_AMOUNT (alloc + free assíncrono)
+    3. Executa POOL test com SUITE_POOL_AMOUNT (alloc + free)
     4. Executa LEAK test com SUITE_LEAK_ROUNDS
-    5. Consolida tempos num relatório final
+    5. Executa SEND test com SUITE_POOL_AMOUNT
+    6. (Concurrent, BigData, Reset, Exhaust, Fragment, RefCount)
+    7. Consolida tempos num relatório final
   
-  Métricas:
-    - Tempo individual de cada teste (segundos)
-    - Tempo total da bateria (segundos)
-  
-  PASS se: Todos os testes individuais passam (sem crash, tempos razoáveis).
-  FAIL se: Qualquer teste crasha ou apresenta degradação de performance severa.
-  
-  USO RECOMENDADO:
-    • Rode /net all ANTES da commit de shared_ptr pooling → salve baseline
-    • Aplique commit + recompile
-    • Rode /net all DEPOIS → compare resultados
-    • Ganhos esperados: CREATE -20%, GC -15%, POOL -30%, LEAK estável
+  NOTA: POOL FREE reporta elapsed próprio (não usa allocStart). EXHAUST inclui
+        recovery phase. SEND usa o valor seguro SUITE_POOL_AMOUNT.
 --]]
-local function runAllTests(player)
-    -- Table para armazenar resultados de cada fase
-    local report = {}
 
+-- Helpers compartilhados: executam a carga de trabalho e retornam elapsed em segundos
+
+local function runCreateWorkload(amount)
+    local start = os.clock()
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        msg:addByte(0xAA)
+        msg:addU16(i)
+        msg:addString("stress")
+        msg = nil
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function runGCWorkload(amount)
+    local start = os.clock()
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        msg:addString("GC TEST")
+        msg:addByte(i % 255)
+        msg = nil
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function poolWorkload(amount)
+    local messages = {}
+    local allocStart = os.clock()
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        msg:addString("POOL TEST")
+        msg:addU32(i)
+        messages[i] = msg
+    end
+    local allocElapsed = os.clock() - allocStart
+    local freeStart = os.clock()
+    for i = 1, #messages do
+        messages[i] = nil
+    end
+    collectgarbage("collect")
+    local freeElapsed = os.clock() - freeStart
+    return allocElapsed, freeElapsed
+end
+
+local function leakWorkload(rounds)
+    local start = os.clock()
+    for round = 1, rounds do
+        for i = 1, 10000 do
+            local msg = NetworkMessage()
+            msg:addString("Leak Test")
+            msg = nil
+        end
+        collectgarbage("collect")
+    end
+    return os.clock() - start
+end
+
+local function sendWorkload(p, amount)
+    local start = os.clock()
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        msg:addByte(0xB4)
+        msg:addString("Benchmark")
+        msg:sendToPlayer(p)
+    end
+    return os.clock() - start
+end
+
+local function exhaustWorkload(poolSize, overshoot)
+    local messages = {}
+    local t1 = os.clock()
+    for i = 1, poolSize do
+        messages[i] = NetworkMessage()
+        messages[i]:addString("pool_" .. i)
+    end
+    local poolTime = os.clock() - t1
+    local t2 = os.clock()
+    for i = poolSize + 1, poolSize + overshoot do
+        messages[i] = NetworkMessage()
+        messages[i]:addString("fallback_" .. i)
+    end
+    local fallbackTime = os.clock() - t2
+    for i = 1, #messages do messages[i] = nil end
+    collectgarbage("collect")
+    -- Recovery phase
+    local t3 = os.clock()
+    for i = 1, poolSize do
+        local msg = NetworkMessage()
+        msg:addString("recovery_" .. i)
+        msg = nil
+    end
+    collectgarbage("collect")
+    local recoveryTime = os.clock() - t3
+    return poolTime, fallbackTime, recoveryTime
+end
+
+local function resetWorkload(rounds)
+    local start = os.clock()
+    for round = 1, rounds do
+        local msg1 = NetworkMessage()
+        msg1:addByte(0xFF)
+        msg1:addString("SECRET")
+        msg1 = nil
+        if round % 100 == 0 then collectgarbage("collect") end
+        local msg2 = NetworkMessage()
+        msg2:addString("CLEAN")
+        msg2 = nil
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function bigDataWorkload(amount, payloadSize)
+    local start = os.clock()
+    local bigPayload = string.rep("X", payloadSize)
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        msg:addString(bigPayload)
+        msg = nil
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function fragmentWorkload(rounds)
+    local start = os.clock()
+    for round = 1, rounds do
+        local msgs = {}
+        for i = 1, 1000 do
+            msgs[i] = NetworkMessage()
+        end
+        for i = 1, 1000, 2 do
+            msgs[i] = nil
+        end
+        collectgarbage("collect")
+        for i = 1, 500 do
+            local msg = NetworkMessage()
+            msg = nil
+        end
+        for i = 1, 1000 do msgs[i] = nil end
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function refCountWorkload(amount)
+    local start = os.clock()
+    for i = 1, amount do
+        local msg = NetworkMessage()
+        local refs = {msg, msg, msg, msg, msg}
+        refs = nil
+        msg = nil
+    end
+    collectgarbage("collect")
+    return os.clock() - start
+end
+
+local function runAllTests(player)
+    local report = {}
     local suiteStart = os.clock()
 
     log(player, "=============================================")
@@ -1137,163 +1302,48 @@ local function runAllTests(player)
     log(player, "=============================================")
 
     -- ── FASE 1: CREATE ────────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for i = 1, SUITE_CREATE_AMOUNT do
-            local msg = NetworkMessage()
-            msg:addByte(0xAA)
-            msg:addU16(i)
-            msg:addString("stress")
-            msg = nil
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("CREATE (%d): %.3f sec", SUITE_CREATE_AMOUNT, elapsed)
-    end
+    local createElapsed = runCreateWorkload(SUITE_CREATE_AMOUNT)
+    report[#report + 1] = string.format("CREATE (%d): %.3f sec", SUITE_CREATE_AMOUNT, createElapsed)
 
     -- ── FASE 2: GC ────────────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for i = 1, SUITE_GC_AMOUNT do
-            local msg = NetworkMessage()
-            msg:addString("GC TEST")
-            msg:addByte(i % 255)
-            msg = nil
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("GC (%d): %.3f sec", SUITE_GC_AMOUNT, elapsed)
-    end
+    local gcElapsed = runGCWorkload(SUITE_GC_AMOUNT)
+    report[#report + 1] = string.format("GC (%d): %.3f sec", SUITE_GC_AMOUNT, gcElapsed)
 
     -- ── FASE 3: POOL ──────────────────────────────────────────────────────
-    do
-        local messages = {}
-        local allocStart = os.clock()
-        for i = 1, SUITE_POOL_AMOUNT do
-            local msg = NetworkMessage()
-            msg:addString("POOL TEST")
-            msg:addU32(i)
-            messages[i] = msg
-        end
-        local allocElapsed = os.clock() - allocStart
-        
-        for i = 1, #messages do
-            messages[i] = nil
-        end
-        collectgarbage("collect")
-        local freeElapsed = os.clock() - allocStart
-        
-        report[#report + 1] = string.format("POOL (%d): alloc=%.3f", SUITE_POOL_AMOUNT, allocElapsed)
-    end
+    local allocElapsed, freeElapsed = poolWorkload(SUITE_POOL_AMOUNT)
+    report[#report + 1] = string.format("POOL (%d): alloc=%.3fs free=%.3fs", SUITE_POOL_AMOUNT, allocElapsed, freeElapsed)
 
     -- ── FASE 4: LEAK ──────────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for round = 1, SUITE_LEAK_ROUNDS do
-            for i = 1, 10000 do
-                local msg = NetworkMessage()
-                msg:addString("Leak Test")
-                msg = nil
-            end
-            collectgarbage("collect")
-        end
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("LEAK (%d rounds): %.3f sec", SUITE_LEAK_ROUNDS, elapsed)
-    end
+    local leakElapsed = leakWorkload(SUITE_LEAK_ROUNDS)
+    report[#report + 1] = string.format("LEAK (%d rounds): %.3f sec", SUITE_LEAK_ROUNDS, leakElapsed)
 
-    -- ── FASE 5: CONCURRENT ────────────────────────────────────────────────
+    -- ── FASE 5: SEND ──────────────────────────────────────────────────────
+    local sendElapsed = sendWorkload(player, SUITE_POOL_AMOUNT)
+    report[#report + 1] = string.format("SEND (%d): %.3f sec", SUITE_POOL_AMOUNT, sendElapsed)
+
+    -- ── FASE 6: CONCURRENT ────────────────────────────────────────────────
     logInfo(player, "CONCURRENT test runs async - results will appear separately")
     runConcurrentTest(player, SUITE_CONCURRENT_WORKERS, SUITE_CONCURRENT_MSGS)
 
-    -- ── FASE 6: BIGDATA ───────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        local bigPayload = string.rep("X", SUITE_BIGDATA_SIZE)
-        for i = 1, SUITE_BIGDATA_AMOUNT do
-            local msg = NetworkMessage()
-            msg:addString(bigPayload)
-            msg = nil
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("BIGDATA (%d x %dB): %.3f sec", SUITE_BIGDATA_AMOUNT, SUITE_BIGDATA_SIZE, elapsed)
-    end
+    -- ── FASE 7: BIGDATA ───────────────────────────────────────────────────
+    local bdElapsed = bigDataWorkload(SUITE_BIGDATA_AMOUNT, SUITE_BIGDATA_SIZE)
+    report[#report + 1] = string.format("BIGDATA (%d x %dB): %.3f sec", SUITE_BIGDATA_AMOUNT, SUITE_BIGDATA_SIZE, bdElapsed)
 
-    -- ── FASE 7: RESET ─────────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for round = 1, SUITE_RESET_ROUNDS do
-            local msg1 = NetworkMessage()
-            msg1:addByte(0xFF)
-            msg1:addString("SECRET")
-            msg1 = nil
-            if round % 100 == 0 then collectgarbage("collect") end
-            local msg2 = NetworkMessage()
-            msg2:addString("CLEAN")
-            msg2 = nil
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("RESET (%d cycles): %.3f sec", SUITE_RESET_ROUNDS, elapsed)
-    end
+    -- ── FASE 8: RESET ─────────────────────────────────────────────────────
+    local resetElapsed = resetWorkload(SUITE_RESET_ROUNDS)
+    report[#report + 1] = string.format("RESET (%d cycles): %.3f sec", SUITE_RESET_ROUNDS, resetElapsed)
 
-    -- ── FASE 8: EXHAUST ───────────────────────────────────────────────────
-    do
-        local messages = {}
-        local t1 = os.clock()
-        for i = 1, SUITE_EXHAUST_POOL do
-            messages[i] = NetworkMessage()
-        end
-        local poolTime = os.clock() - t1
-        
-        local t2 = os.clock()
-        for i = SUITE_EXHAUST_POOL + 1, SUITE_EXHAUST_POOL + SUITE_EXHAUST_OVER do
-            messages[i] = NetworkMessage()
-        end
-        local fallbackTime = os.clock() - t2
-        
-        for i = 1, #messages do messages[i] = nil end
-        collectgarbage("collect")
-        
-        report[#report + 1] = string.format("EXHAUST pool=%.3fs fallback=%.3fs", poolTime, fallbackTime)
-    end
+    -- ── FASE 9: EXHAUST ───────────────────────────────────────────────────
+    local exhaustPool, exhaustFallback, exhaustRecovery = exhaustWorkload(SUITE_EXHAUST_POOL, SUITE_EXHAUST_OVER)
+    report[#report + 1] = string.format("EXHAUST pool=%.3fs fallback=%.3fs recovery=%.3fs", exhaustPool, exhaustFallback, exhaustRecovery)
 
-    -- ── FASE 9: FRAGMENT ──────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for round = 1, SUITE_FRAGMENT_ROUNDS do
-            local msgs = {}
-            for i = 1, 1000 do
-                msgs[i] = NetworkMessage()
-            end
-            for i = 1, 1000, 2 do
-                msgs[i] = nil
-            end
-            collectgarbage("collect")
-            for i = 1, 500 do
-                local msg = NetworkMessage()
-                msg = nil
-            end
-            for i = 1, 1000 do msgs[i] = nil end
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("FRAGMENT (%d rounds): %.3f sec", SUITE_FRAGMENT_ROUNDS, elapsed)
-    end
+    -- ── FASE 10: FRAGMENT ─────────────────────────────────────────────────
+    local fragElapsed = fragmentWorkload(SUITE_FRAGMENT_ROUNDS)
+    report[#report + 1] = string.format("FRAGMENT (%d rounds): %.3f sec", SUITE_FRAGMENT_ROUNDS, fragElapsed)
 
-    -- ── FASE 10: REFCOUNT ─────────────────────────────────────────────────
-    do
-        local start = os.clock()
-        for i = 1, SUITE_REFCOUNT_AMOUNT do
-            local msg = NetworkMessage()
-            local refs = {msg, msg, msg, msg, msg}
-            refs = nil
-            msg = nil
-        end
-        collectgarbage("collect")
-        local elapsed = os.clock() - start
-        report[#report + 1] = string.format("REFCOUNT (%d objs): %.3f sec", SUITE_REFCOUNT_AMOUNT, elapsed)
-    end
+    -- ── FASE 11: REFCOUNT ─────────────────────────────────────────────────
+    local refElapsed = refCountWorkload(SUITE_REFCOUNT_AMOUNT)
+    report[#report + 1] = string.format("REFCOUNT (%d objs): %.3f sec", SUITE_REFCOUNT_AMOUNT, refElapsed)
 
     -- ── RELATÓRIO FINAL ───────────────────────────────────────────────────
     local totalElapsed = os.clock() - suiteStart
@@ -1324,7 +1374,7 @@ local function showHelp(player)
     logInfo(player, string.format("/net gc[,%d]", SUITE_GC_AMOUNT))
     logInfo(player, string.format("/net pool[,%d]", SUITE_POOL_AMOUNT))
     logInfo(player, string.format("/net leak[,%d]", SUITE_LEAK_ROUNDS))
-    logInfo(player, string.format("/net send[,%d]", SUITE_CREATE_AMOUNT))
+    logInfo(player, string.format("/net send[,%d]", SUITE_POOL_AMOUNT))
     log(player, "----------------------------------------------")
     logInfo(player, string.format("/net concurrent[,%d,%d]", SUITE_CONCURRENT_WORKERS, SUITE_CONCURRENT_MSGS))
     logInfo(player, string.format("/net bigdata[,%d,%d]", SUITE_BIGDATA_AMOUNT, SUITE_BIGDATA_SIZE))
@@ -1393,7 +1443,7 @@ function talk.onSay(player, words, param)
         runLeakTest(player, value1 or SUITE_LEAK_ROUNDS)
 
     elseif cmd == "send" then
-        runSendTest(player, value1 or SUITE_CREATE_AMOUNT)
+        runSendTest(player, value1 or SUITE_POOL_AMOUNT)
 
     elseif cmd == "concurrent" then
         local workers = value1 or SUITE_CONCURRENT_WORKERS
@@ -1434,5 +1484,7 @@ end
 -- REGISTRO
 -- ============================================================================
 -- Registra TalkAction com separador de espaço (permite /net create,100000)
+-- Restrito a contas administrativas (ACCOUNT_TYPE_GOD = 6)
 talk:separator(" ")
+talk:accountType(6)
 talk:register()

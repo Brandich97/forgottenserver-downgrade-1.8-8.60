@@ -139,7 +139,7 @@ local function logPass(player, msg)
 end
 
 local function logInfo(player, msg)
-    local coloredMsg = msg:gsub("(Phase %d+[abc]?%-?[abc]?:)", COLOR_ORANGE .. "%1" .. COLOR_RESET)
+    local coloredMsg = msg:gsub("(Phase %d+[abc]?:)", COLOR_ORANGE .. "%1" .. COLOR_RESET)
     coloredMsg = coloredMsg:gsub("(Ph%d+ [A-Z]+:)", COLOR_ORANGE .. "%1" .. COLOR_RESET)
     coloredMsg = coloredMsg:gsub("(Ph%d+:)", COLOR_ORANGE .. "%1" .. COLOR_RESET)
     print(COLOR_BLUE .. "[StressDB]" .. COLOR_GREEN .. "[INFO]" .. COLOR_RESET .. " " .. coloredMsg)
@@ -359,7 +359,7 @@ end
 --]]
 local function runPhase2(player, runId)
     local n    = CFG.ph2_storage_keys
-    local base = STORAGE_BASE + 3000
+    local base = STORAGE_BASE + 3000  -- +3000 was increased from +2000 to avoid colliding with Phase 3 key (also STORAGE_BASE+3000); phases run sequentially and clean up after themselves so sharing the same offset is safe
 
     log(player, string.format("Phase 2: Storage dirty snapshot - %d keys (verificacao com IN + next())...", n))
 
