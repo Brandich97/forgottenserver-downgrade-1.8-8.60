@@ -11,6 +11,7 @@
 #include "pugicast.h"
 #include "scheduler.h"
 #include "logger.h"
+#include <fmt/color.h>
 #include <fmt/format.h>
 
 extern Game g_game;
@@ -714,7 +715,8 @@ bool AreaSpawnEvent::executeEvent()
 			}
 
 			if (!placed) {
-				LOG_WARN(fmt::format("[Warning - AreaSpawnEvent::executeEvent] Could not place monster {} after {} tries", spawn.name, MAXIMUM_TRIES_PER_MONSTER));
+				LOG_RAID("Area spawn could not place monster {} after {} tries",
+				         spawn.name, MAXIMUM_TRIES_PER_MONSTER);
 			}
 		}
 	}

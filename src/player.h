@@ -22,6 +22,9 @@
 #include "town.h"
 #include "vocation.h"
 
+#include <unordered_map>
+#include <unordered_set>
+
 enum VirtueMonk_t : uint8_t {
 	VIRTUE_NONE = 0,
 	VIRTUE_HARMONY = 1,
@@ -183,6 +186,8 @@ public:
 
 	void setGUID(uint32_t guid) { this->guid = guid; }
 	uint32_t getGUID() const { return guid; }
+	bool getSaveFlag() const { return saveFlag; }
+	void setSaveFlag(bool value) { saveFlag = value; }
 	bool canSeeInvisibility() const override { return hasFlag(PlayerFlag_CanSenseInvisibility) || group->access; }
 
 	void removeList() override;
@@ -404,6 +409,14 @@ public:
 	const std::unordered_set<uint32_t>& getModifiedStorageKeys() const { return modifiedStorageKeys; }
 	const std::unordered_set<uint32_t>& getRemovedStorageKeys() const { return removedStorageKeys; }
 	bool hasStorageDirty() const { return !modifiedStorageKeys.empty() || !removedStorageKeys.empty(); }
+	struct StorageDirtySnapshot
+	{
+		uint64_t snapshotId = 0;
+		std::unordered_set<uint32_t> modifiedKeys;
+		std::unordered_set<uint32_t> removedKeys;
+	};
+	StorageDirtySnapshot getStorageDirtySnapshot() const;
+	void acknowledgeStorageDirty(const StorageDirtySnapshot& snapshot);
 	void clearStorageDirty();
 
 	void setGroup(const std::shared_ptr<Group>& newGroup) { group = newGroup; }
@@ -1464,6 +1477,8 @@ private:
 	std::unordered_set<uint32_t> VIPList;
 	std::unordered_set<uint32_t> modifiedStorageKeys;
 	std::unordered_set<uint32_t> removedStorageKeys;
+	uint64_t storageDirtyRevision = 0;
+	std::unordered_map<uint32_t, uint64_t> storageDirtyKeyRevisions;
 	std::unordered_map<std::string, PreyCombatBonus> preyCombatBonuses;
 
 	std::unordered_map<uint8_t, OpenContainer> openContainers;
@@ -1551,6 +1566,7 @@ private:
 	uint32_t MessageBufferTicks = 0;
 	uint32_t accountNumber = 0;
 	uint32_t guid = 0;
+	bool saveFlag = true;
 	uint32_t windowTextId = 0;
 	uint32_t editListId = 0;
 	uint32_t mana = 0;

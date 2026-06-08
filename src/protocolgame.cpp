@@ -18,6 +18,7 @@
 #include "imbuement.h"
 #include "scheduler.h"
 #include "scriptmanager.h"
+#include "thread_pool.h"
 
 uint32_t ProtocolGame::spectatorId = 1;
 std::set<std::string> ProtocolGame::spectatorNames;
@@ -364,55 +365,20 @@ void ProtocolGame::login(uint32_t characterId, uint32_t accountId, OperatingSyst
 			return;
 		}
 
-		if (!IOLoginData::loadPlayerById(player.get(), player->getGUID())) {
-			disconnectClient("Your character could not be loaded.");
+		const uint32_t reservedGuid = player->getGUID();
+		if (!g_game.reserveLogin(reservedGuid)) {
+			disconnectClient("You are already logging in.");
 			return;
 		}
 
-		player->setOperatingSystem(operatingSystem);
-		player->client->isOTCv8 = isOTCv8;
-		player->client->isMehah = isMehah;
-		player->client->isOTC = isOTC;
-		player->client->isAstraClient = isAstraClient;
-
-		if (!g_game.placeCreature(player.get(), player->getLoginPosition())) {
-			if (!g_game.placeCreature(player.get(), player->getTemplePosition(), false, true)) {
-				disconnectClient("Temple position is wrong. Contact the administrator.");
-				return;
-			}
-		}
-		sendLootContainers();
-
-		if (isOTC) {
-			player->registerCreatureEvent("ExtendedOpcode");
-		}
-
-		// Setup Account Manager mode (only if not already set by namelock handler above)
-		if (ConfigManager::getBoolean(ConfigManager::ACCOUNT_MANAGER) && name == "Account Manager" &&
-		    player->getAccountManagerMode() == ACCOUNT_MANAGER_NONE) {
-			if (accountId == 1) {
-				player->setAccountManagerMode(ACCOUNT_MANAGER_NEW);
-				player->sendTextMessage(
-				    MESSAGE_STATUS_CONSOLE_ORANGE,
-				    "Account Manager: Welcome! You are now speaking with the Account Manager. To create a new account, type {account}. If you already have one and need to recover it, type {recover}. Type {cancel} anytime to restart this conversation.");
-			} else {
-				player->setAccountManagerMode(ACCOUNT_MANAGER_ACCOUNT);
-				player->setAccountManagerData(accountId);
-				player->resetTalkState(0, 0);
-				player->setManagerTalkState(1, true);
-				player->sendTextMessage(
-				    MESSAGE_STATUS_CONSOLE_ORANGE,
-				    "Account Manager: Welcome back. Type {account} to manage your account, {character} to create a new character, or {cancel} to start over.");
-			}
-		}
-		// Block movement for all Account Manager modes
-		if (player->isAccountManager()) {
-			player->setMovementBlocked(true);
-		}
-
-		player->lastIP = player->getIP();
-		player->lastLoginSaved = std::max<time_t>(time(nullptr), player->lastLoginSaved + 1);
-		acceptPackets = true;
+		const auto loginPlayer = player;
+		g_threadPool.detach_task([self = getThis(), loginPlayer, reservedGuid, accountId, operatingSystem]() {
+			const bool loaded = IOLoginData::loadPlayerById(loginPlayer.get(), reservedGuid, true);
+			g_dispatcher.addTask([self, reservedGuid, accountId, loaded, operatingSystem]() {
+				self->finishLogin(reservedGuid, accountId, loaded, operatingSystem);
+			});
+		});
+		return;
 	} else {
 		if (eventConnect != 0 || !getBoolean(ConfigManager::REPLACE_KICK_ON_LOGIN)) {
 			// Already trying to connect
@@ -435,6 +401,70 @@ void ProtocolGame::login(uint32_t characterId, uint32_t accountId, OperatingSyst
 			connect(foundPlayer->getID(), operatingSystem);
 		}
 	}
+}
+
+void ProtocolGame::finishLogin(uint32_t reservedGuid, uint32_t accountId, bool loaded, OperatingSystem_t operatingSystem)
+{
+	if (!player || isConnectionExpired()) {
+		g_game.releaseLogin(reservedGuid);
+		return;
+	}
+
+	if (!loaded) {
+		g_game.releaseLogin(reservedGuid);
+		disconnectClient("Your character could not be loaded.");
+		return;
+	}
+
+	IOLoginData::loadPlayerWorldData(player.get());
+
+	player->setOperatingSystem(operatingSystem);
+	player->client->isOTCv8 = isOTCv8;
+	player->client->isMehah = isMehah;
+	player->client->isOTC = isOTC;
+	player->client->isAstraClient = isAstraClient;
+
+	if (!g_game.placeCreature(player.get(), player->getLoginPosition())) {
+		if (!g_game.placeCreature(player.get(), player->getTemplePosition(), false, true)) {
+			g_game.releaseLogin(reservedGuid);
+			disconnectClient("Temple position is wrong. Contact the administrator.");
+			return;
+		}
+	}
+	sendDllCheck();
+	sendLootContainers();
+
+	if (isOTC) {
+		player->registerCreatureEvent("ExtendedOpcode");
+	}
+
+	const std::string& name = player->getName();
+	if (ConfigManager::getBoolean(ConfigManager::ACCOUNT_MANAGER) && name == "Account Manager" &&
+	    player->getAccountManagerMode() == ACCOUNT_MANAGER_NONE) {
+		if (accountId == 1) {
+			player->setAccountManagerMode(ACCOUNT_MANAGER_NEW);
+			player->sendTextMessage(
+			    MESSAGE_STATUS_CONSOLE_ORANGE,
+			    "Account Manager: Welcome! You are now speaking with the Account Manager. To create a new account, type {account}. If you already have one and need to recover it, type {recover}. Type {cancel} anytime to restart this conversation.");
+		} else {
+			player->setAccountManagerMode(ACCOUNT_MANAGER_ACCOUNT);
+			player->setAccountManagerData(accountId);
+			player->resetTalkState(0, 0);
+			player->setManagerTalkState(1, true);
+			player->sendTextMessage(
+			    MESSAGE_STATUS_CONSOLE_ORANGE,
+			    "Account Manager: Welcome back. Type {account} to manage your account, {character} to create a new character, or {cancel} to start over.");
+		}
+	}
+
+	if (player->isAccountManager()) {
+		player->setMovementBlocked(true);
+	}
+
+	player->lastIP = player->getIP();
+	player->lastLoginSaved = std::max<time_t>(time(nullptr), player->lastLoginSaved + 1);
+	acceptPackets = true;
+	g_game.releaseLogin(reservedGuid);
 }
 
 void ProtocolGame::spectate(const std::string& name, const std::string& password)
@@ -851,6 +881,12 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 		return;
 	}
 
+	auto dispatchPlayerNetworkMessage = [&](uint8_t byte, NetworkMessage& message) {
+		g_dispatcher.addTask([=, playerID = player->getID(), message = tfs::net::make_network_message(message)]() {
+			g_game.parsePlayerNetworkMessage(playerID, byte, message);
+		});
+	};
+
 	switch (recvbyte) {
 		case 0x14:
 			g_dispatcher.addTask([thisPtr = getThis()]() { thisPtr->logout(true, false); });
@@ -976,25 +1012,27 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 			break;
 		case 0x8E: /* join aggression */
 			break;
-		case 0x8F:
+				case 0x8F:
 			if (shouldSendQuickLootFlags()) {
-				g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-					g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-				});
+				parseQuickLoot(msg);
+			} else {
+				dispatchPlayerNetworkMessage(recvbyte, msg);
 			}
 			break;
+
 		case 0x90:
 			if (shouldSendQuickLootFlags()) {
-				g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-					g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-				});
+				parseLootContainer(msg);
+			} else {
+				dispatchPlayerNetworkMessage(recvbyte, msg);
 			}
 			break;
+
 		case 0x91:
 			if (shouldSendQuickLootFlags()) {
-				g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-					g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-				});
+				parseQuickLootBlackWhitelist(msg);
+			} else {
+				dispatchPlayerNetworkMessage(recvbyte, msg);
 			}
 			break;
 		case 0x96:
@@ -1072,9 +1110,7 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 			parseBugReport(msg);
 			break;
 		case 0xE7: /* thank you / custom wheel gem action */
-			g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-				g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-			});
+			dispatchPlayerNetworkMessage(recvbyte, msg);
 			break;
 		case 0xF2:
 			parseRuleViolationReport(msg);
@@ -1085,20 +1121,14 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 		case 0xFA: /* custom store history */
 		case 0xFB: /* custom store open */
 		case 0xFC: /* custom store buy */
-			g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-				g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-			});
+			dispatchPlayerNetworkMessage(recvbyte, msg);
 			break;
 		case 0xF9:
 			parseModalWindowAnswer(msg);
 			break;
 
 		default:
-			// we cannot pass a unique_ptr as capture here because
-			// std::function requires the callable object to be *copyable*
-			g_dispatcher.addTask([=, playerID = player->getID(), message = std::make_shared<NetworkMessage>(msg)]() {
-				g_game.parsePlayerNetworkMessage(playerID, recvbyte, std::make_unique<NetworkMessage>(*message));
-			});
+			dispatchPlayerNetworkMessage(recvbyte, msg);
 			break;
 	}
 

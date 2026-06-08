@@ -8,6 +8,9 @@
 #include "database.h"
 #include "observer_ptr.h"
 #include "player.h"
+#include <optional>
+#include <unordered_set>
+#include <vector>
 
 using ItemBlockList = std::list<std::pair<int32_t, ObserverPtr<Item>>>;
 
@@ -29,10 +32,19 @@ public:
 	static void removeOnlineStatus(uint32_t guid);
 	static bool preloadPlayer(Player* player);
 
-	static bool loadPlayerById(Player* player, uint32_t id);
+	static bool loadPlayerById(Player* player, uint32_t id, bool deferWorldData = false);
 	static bool loadPlayerByName(Player* player, std::string_view name);
-	static bool loadPlayer(Player* player, DBResult_ptr result);
-	static bool savePlayer(Player* player);
+	static bool loadPlayer(Player* player, DBResult_ptr result, bool deferWorldData = false);
+	static void loadPlayerWorldData(Player* player);
+	struct PlayerSaveSnapshot
+	{
+		std::vector<std::string> queries;
+		uint64_t storageSnapshotId = 0;
+		std::unordered_set<uint32_t> snapshotModifiedKeys;
+		std::unordered_set<uint32_t> snapshotRemovedKeys;
+	};
+	static std::optional<PlayerSaveSnapshot> buildPlayerSave(Player* player);
+	static bool flushPlayerSave(const PlayerSaveSnapshot& snapshot);
 	static bool addRewardItems(uint32_t playerId, const ItemBlockList& itemList, DBInsert& query_insert, PropWriteStream& propWriteStream);
 	static uint32_t getGuidByName(std::string_view name);
 	static bool getGuidByNameEx(uint32_t& guid, bool& specialVip, std::string& name);
@@ -65,10 +77,15 @@ public:
 	static std::vector<std::pair<std::string, std::string>> getCastList(const std::string& password);
 
 private:
+	friend class SaveManager;
+
 	using ItemMap = std::map<uint32_t, std::pair<std::shared_ptr<Item>, uint32_t>>;
 
 	static void loadItems(ItemMap& itemMap, DBResult_ptr result);
 	static void cleanupItemMap(ItemMap& itemMap);
+	static void loadPlayerGuild(Player* player);
+	static bool savePlayer(Player* player);
+	static bool savePlayerQueries(Player* player);
 	static bool saveItems(const Player* player, const ItemBlockList& itemList, DBInsert& query_insert,
 	                      PropWriteStream& propWriteStream);
 };

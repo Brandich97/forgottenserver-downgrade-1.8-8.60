@@ -275,6 +275,7 @@ public:
 	int32_t scriptId;
 	int32_t callbackId;
 	bool timerEvent;
+	bool hasOpenTransaction = false;
 
 	// result map
 	static uint32_t lastResultId;
@@ -340,6 +341,11 @@ public:
 	static void resetScriptEnv()
 	{
 		assert(scriptEnvIndex >= 0);
+		// Rollback any open transaction leaked by the script that just ended
+		if (Database::getInstance().isInTransaction()) {
+			Database::getInstance().rollback();
+			scriptEnv[scriptEnvIndex].hasOpenTransaction = false;
+		}
 		scriptEnv[scriptEnvIndex--].resetEnv();
 	}
 
@@ -361,7 +367,7 @@ public:
 	static std::string escapeString(std::string string);
 
 	static const luaL_Reg luaConfigManagerTable[5];
-	static const luaL_Reg luaDatabaseTable[9];
+	static const luaL_Reg luaDatabaseTable[14];
 	static const luaL_Reg luaResultTable[6];
 
 	static int protectedCall(lua_State* L, int nargs, int nresults);
@@ -524,6 +530,11 @@ private:
 	static int luaDatabaseEscapeBlob(lua_State* L);
 	static int luaDatabaseLastInsertId(lua_State* L);
 	static int luaDatabaseTableExists(lua_State* L);
+	static int luaDatabaseBeginTransaction(lua_State* L);
+	static int luaDatabaseCommit(lua_State* L);
+	static int luaDatabaseRollback(lua_State* L);
+	static int luaDatabaseAffectedRows(lua_State* L);
+	static int luaDatabaseTransaction(lua_State* L);
 
 
 	static int luaResultGetNumber(lua_State* L);
@@ -889,10 +900,26 @@ inline T* getUserdata(lua_State* L, int32_t arg, const bool checkType = true)
 	return *userdata;
 }
 
+template <typename T>
+T* getUserdataOrPushNil(lua_State* L, int32_t index)
+{
+	T* value = getUserdata<T>(L, index);
+	if (!value) {
+		lua_pushnil(L);
+	}
+	return value;
+}
+
 template <class T>
 inline std::shared_ptr<T>& getSharedPtr(lua_State* L, int32_t arg)
 {
-	return *static_cast<std::shared_ptr<T>*>(lua_touserdata(L, arg));
+	static thread_local std::shared_ptr<T> sentinel;
+	void* ud = lua_touserdata(L, arg);
+	if (!ud) {
+		sentinel.reset();
+		return sentinel;
+	}
+	return *static_cast<std::shared_ptr<T>*>(ud);
 }
 
 template <class T>
@@ -1059,6 +1086,16 @@ template <class T>
 inline void pushSharedPtr(lua_State* L, T value, int nuvalue = 1)
 {
 	new (lua_newuserdatauv(L, sizeof(T), nuvalue)) T(std::move(value));
+}
+
+template <class T>
+inline int luaSharedPtrDelete(lua_State* L)
+{
+	auto ptr = static_cast<std::shared_ptr<T>*>(lua_touserdata(L, 1));
+	if (ptr) {
+		ptr->reset();
+	}
+	return 0;
 }
 
 // Extra

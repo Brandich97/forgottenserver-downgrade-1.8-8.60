@@ -9,6 +9,7 @@
 #include "configmanager.h"
 #include "game.h"
 #include "iologindata.h"
+#include "save_manager.h"
 #include "pugicast.h"
 #include "logger.h"
 #include <fmt/format.h>
@@ -322,7 +323,10 @@ bool House::transferToDepot() const
 
 	transferToDepot(targetPlayer);
 	if (needsSave) {
-		IOLoginData::savePlayer(&tmpPlayer);
+		if (!g_saveManager.savePlayerSync(&tmpPlayer)) {
+			LOG_ERROR(fmt::format("[House::transferToDepot] Failed to save temporary player {} data.", tmpPlayer.getName()));
+			return false;
+		}
 	}
 	return true;
 }
@@ -920,7 +924,10 @@ void Houses::payHouses(RentPeriod_t rentPeriod) const
 				}
 			}
 
-			IOLoginData::savePlayer(&player);
+			if (!g_saveManager.savePlayerSync(&player)) {
+				LOG_ERROR(fmt::format("[House::payHouses] Failed to save player {} after rent payment.", player.getName()));
+				continue;
+			}
 		} else { // HOUSE_TYPE_GUILDHALL
 			auto guild = g_game.getGuild(ownerId);
 			if (!guild) {
@@ -972,7 +979,10 @@ void Houses::payHouses(RentPeriod_t rentPeriod) const
 					house->setOwner(0, true, &player);
 				}
 
-				IOLoginData::savePlayer(&player);
+			if (!g_saveManager.savePlayerSync(&player)) {
+				LOG_ERROR(fmt::format("[House::payHouses] Failed to save player {} after rent payment.", player.getName()));
+				continue;
+			}
 			}
 		}
 	}
