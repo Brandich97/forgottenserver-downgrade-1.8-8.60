@@ -1,28 +1,39 @@
 local talk = TalkAction("/condition")
 
 function talk.onSay(player, words, param)
-	if not player:getGroup():hasFlag(PlayerFlag_CanAnswerRuleViolations) then
-		return false
-	end
-
 	if param == "" then
-		player:sendTextMessage(MESSAGE_ADMIN, "Usage: /condition root|fear|agony|bleed, seconds, [playername]")
+		player:sendTextMessage(MESSAGE_ADMIN, "Usage: /condition root|fear|agony|bleed,seconds,[name]")
 		return false
 	end
 
-	local parts = {}
-	for part in string.gmatch(param, "[^,]+") do
-		parts[#parts + 1] = part:trim()
+	-- Manual split by comma
+	local condName = nil
+	local seconds = nil
+	local targetName = nil
+
+	if param:find(",") then
+		local comma1 = param:find(",")
+		condName = param:sub(1, comma1 - 1):match("^%s*(.-)%s*$")
+		local rest = param:sub(comma1 + 1)
+		if rest:find(",") then
+			local comma2 = rest:find(",")
+			seconds = tonumber(rest:sub(1, comma2 - 1):match("^%s*(.-)%s*$"))
+			targetName = rest:sub(comma2 + 1):match("^%s*(.-)%s*$")
+		else
+			seconds = tonumber(rest:match("^%s*(.-)%s*$"))
+		end
+	else
+		condName = param:match("^%s*(.-)%s*$")
+		seconds = 10
 	end
 
-	if #parts < 2 then
-		player:sendTextMessage(MESSAGE_ADMIN, "Usage: /condition root|fear|agony|bleed, seconds, [playername]")
+	if not condName then
+		player:sendTextMessage(MESSAGE_ADMIN, "Usage: /condition root|fear|agony|bleed,seconds,[name]")
 		return false
 	end
 
-	local condName = parts[1]:lower()
-	local seconds = tonumber(parts[2]) or 10
-	local targetName = parts[3]
+	condName = condName:lower()
+	seconds = seconds or 10
 	local target = targetName and Player(targetName) or player
 
 	if not target then
@@ -45,9 +56,14 @@ function talk.onSay(player, words, param)
 	end
 
 	local ticks = seconds * 1000
-	local condition = Condition(conditionType, CONDITIONID_DEFAULT, ticks)
-	target:addCondition(condition)
-	player:sendTextMessage(MESSAGE_ADMIN, "Applied " .. condName .. " to " .. target:getName() .. " for " .. seconds .. "s")
+	local condition = Condition(CONDITIONID_DEFAULT, conditionType, ticks)
+	if not condition then
+		player:sendTextMessage(MESSAGE_ADMIN, "Failed to create condition!")
+		return false
+	end
+
+	local ok = target:addCondition(condition)
+	player:sendTextMessage(MESSAGE_ADMIN, string.format("Applied %s to %s for %ds", condName, target:getName(), seconds))
 	return false
 end
 

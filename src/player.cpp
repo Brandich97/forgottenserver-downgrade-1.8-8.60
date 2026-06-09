@@ -1195,11 +1195,8 @@ void Player::sendIcons() const
 	// Send extended 64-bit state icons for AstraClient
 	uint64_t highIcons = getClientIcons64() & ~0xFFFFULL;
 	if (highIcons != 0) {
-		fmt::print(stderr, "[DEBUG-ICONS] sending highIcons=0x{:016X} via opcode 0x8C\n", highIcons);
 		client->sendExtendedOpcode(0x8C, std::string(reinterpret_cast<const char*>(&highIcons), sizeof(highIcons)));
 	}
-	fmt::print(stderr, "[DEBUG-ICONS] sendIcons: low16=0x{:04X} high48=0x{:016X} full64=0x{:016X}\n",
-		static_cast<uint32_t>(getClientIcons()), highIcons, getClientIcons64());
 }
 
 void Player::updateInventoryWeight()
