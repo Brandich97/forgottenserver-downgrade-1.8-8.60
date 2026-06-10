@@ -1,18 +1,54 @@
 function onUpdateDatabase()
-	logMigration("Updating database to version 44 (weapon proficiency)")
-	local success = db.query([[
-		CREATE TABLE IF NOT EXISTS `player_weapon_proficiency` (
-			`player_id` int NOT NULL,
-			`item_id` smallint unsigned NOT NULL,
-			`experience` int unsigned NOT NULL DEFAULT '0',
-			`perks` varchar(64) NOT NULL DEFAULT '',
-			PRIMARY KEY (`player_id`, `item_id`),
-			FOREIGN KEY (`player_id`) REFERENCES `players` (`id`) ON DELETE CASCADE
-		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8;
-	]])
-	if not success then
-		logMigration("Failed to create player_weapon_proficiency table")
-		return false
+	logMigration("Updating database to version 45 (Bosstiary and Hunting Tasks)")
+
+	local queries = {
+		[[
+			CREATE TABLE IF NOT EXISTS `player_bosstiary` (
+				`player_id` INT NOT NULL,
+				`points` INT UNSIGNED NOT NULL DEFAULT 0,
+				`slot_one` INT UNSIGNED NOT NULL DEFAULT 0,
+				`slot_two` INT UNSIGNED NOT NULL DEFAULT 0,
+				`remove_times` INT UNSIGNED NOT NULL DEFAULT 0,
+				PRIMARY KEY (`player_id`)
+			) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8
+		]],
+		[[
+			CREATE TABLE IF NOT EXISTS `player_bosstiary_tracker` (
+				`player_id` INT NOT NULL,
+				`bossid` INT UNSIGNED NOT NULL,
+				`slot` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+				PRIMARY KEY (`player_id`, `bossid`),
+				KEY `idx_player_bosstiary_tracker_slot` (`player_id`, `slot`)
+			) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8
+		]],
+		[[
+			CREATE TABLE IF NOT EXISTS `player_hunting_tasks` (
+				`player_id` INT NOT NULL,
+				`slot` TINYINT UNSIGNED NOT NULL,
+				`state` TINYINT UNSIGNED NOT NULL DEFAULT 2,
+				`raceid` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+				`race_list` TEXT NOT NULL,
+				`rarity` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+				`upgraded` TINYINT(1) NOT NULL DEFAULT 0,
+				`kills` INT UNSIGNED NOT NULL DEFAULT 0,
+				`reroll_at` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+				`disabled_until` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+				PRIMARY KEY (`player_id`, `slot`)
+			) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8
+		]],
+		[[
+			CREATE TABLE IF NOT EXISTS `player_hunting_task_points` (
+				`player_id` INT NOT NULL,
+				`points` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+				PRIMARY KEY (`player_id`)
+			) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8
+		]],
+	}
+
+	for _, query in ipairs(queries) do
+		if not db.query(query) then
+			return false
+		end
 	end
 	return true
 end

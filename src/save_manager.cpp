@@ -6,6 +6,9 @@
 
 #include "save_manager.h"
 
+#include <thread>
+
+#include "database.h"
 #include "game.h"
 #include "iomapserialize.h"
 #include "logger.h"
@@ -146,7 +149,11 @@ bool SaveManager::savePlayerSync(Player* player)
 		if (auto it = pendingFlushes.find(guid); it != pendingFlushes.end()) {
 			tracked = it->second.trackedBySaveAll;
 		}
-		pendingFlushes[guid] = PendingPlayerFlush{player->getName(), std::move(*save), tracked};
+		PendingPlayerFlush pending{player->getName(), std::move(*save), tracked};
+		if (!savePendingFlushToDB(guid, pending.save)) {
+			LOG_ERROR(fmt::format("[SaveManager] WAL write failed for pending flush guid={}, save may be lost", guid));
+		}
+		pendingFlushes[guid] = std::move(pending);
 		return false; // enqueued behind in-flight flush; save will complete via onPlayerFlushed
 	}
 
@@ -170,7 +177,29 @@ bool SaveManager::savePlayerSync(Player* player)
 	}
 	flushInFlight.erase(guid);
 
+	auto it = pendingFlushes.find(guid);
+	if (it != pendingFlushes.end()) {
+		PendingPlayerFlush pending = std::move(it->second);
+		pendingFlushes.erase(it);
+		flushInFlight.insert(guid);
+		dispatchPlayerFlush(guid, std::move(pending));
+	}
+
 	return success;
+}
+
+void SaveManager::drainPlayerFlushAsync(uint32_t guid, std::function<void(bool)> callback)
+{
+	g_dispatcher.addTask([this, guid, callback = std::move(callback)]() mutable {
+		if (flushInFlight.contains(guid) || pendingFlushes.contains(guid)) {
+			flushChainCallbacks[guid].push_back(std::move(callback));
+		} else {
+			// No flush pending, deliver callback on dispatcher
+			g_dispatcher.addTask([callback = std::move(callback)]() mutable {
+				callback(true);
+			});
+		}
+	});
 }
 
 bool SaveManager::schedulePlayerFlush(Player* player, bool trackSaveAll /* = false */)
@@ -201,7 +230,11 @@ bool SaveManager::schedulePlayerFlush(Player* player, bool trackSaveAll /* = fal
 		if (trackSaveAll && !oldTracked) {
 			beginTrackedFlush();
 		}
-		pendingFlushes[guid] = PendingPlayerFlush{name, std::move(*save), newTracked};
+		PendingPlayerFlush pending{name, std::move(*save), newTracked};
+		if (!savePendingFlushToDB(guid, pending.save)) {
+			LOG_ERROR(fmt::format("[SaveManager] WAL write failed for pending flush guid={}, save may be lost", guid));
+		}
+		pendingFlushes[guid] = std::move(pending);
 		return true;
 	}
 
@@ -226,6 +259,25 @@ void SaveManager::onPlayerFlushed(uint32_t guid, bool trackedBySaveAll, bool suc
 	auto it = pendingFlushes.find(guid);
 	if (it == pendingFlushes.end()) {
 		flushInFlight.erase(guid);
+
+		// Chain complete: delete WAL on success, keep on failure for recovery
+		if (success) {
+			deletePendingFlushFromDB(guid);
+		} else {
+			LOG_ERROR(fmt::format("[SaveManager] Flush failed for guid={}, WAL entry preserved for recovery", guid));
+		}
+
+		// Invoke all registered callbacks for this flush chain
+		auto cbIt = flushChainCallbacks.find(guid);
+		if (cbIt != flushChainCallbacks.end()) {
+			for (auto& cb : cbIt->second) {
+				g_dispatcher.addTask([cb = std::move(cb), success]() mutable {
+					cb(success);
+				});
+			}
+			flushChainCallbacks.erase(cbIt);
+		}
+
 		return;
 	}
 
@@ -236,6 +288,29 @@ void SaveManager::onPlayerFlushed(uint32_t guid, bool trackedBySaveAll, bool suc
 
 void SaveManager::dispatchPlayerFlush(uint32_t guid, PendingPlayerFlush pending)
 {
+	// Persist to WAL before dispatch so crash recovery can replay
+	if (!savePendingFlushToDB(guid, pending.save)) {
+		LOG_ERROR(fmt::format("[SaveManager] WAL write failed for guid={}, aborting flush chain", guid));
+		flushInFlight.erase(guid);
+		pendingFlushes.erase(guid);
+
+		// Notify all waiting callbacks with failure
+		auto cbIt = flushChainCallbacks.find(guid);
+		if (cbIt != flushChainCallbacks.end()) {
+			for (auto& cb : cbIt->second) {
+				g_dispatcher.addTask([cb = std::move(cb)]() mutable {
+					cb(false);
+				});
+			}
+			flushChainCallbacks.erase(cbIt);
+		}
+
+		if (pending.trackedBySaveAll) {
+			completeTrackedFlush();
+		}
+		return;
+	}
+
 	g_threadPool.detach_task([this, guid, pending = std::move(pending)]() mutable {
 		std::string name = std::move(pending.name);
 		IOLoginData::PlayerSaveSnapshot save = std::move(pending.save);
@@ -265,22 +340,120 @@ void SaveManager::acknowledgePlayerSave(uint32_t guid, const IOLoginData::Player
 
 void SaveManager::beginTrackedFlush() noexcept
 {
-	pendingSaveFlushes.fetch_add(1, std::memory_order_relaxed);
+	pendingSaveFlushes.fetch_add(1, std::memory_order_release);
 }
 
 void SaveManager::completeTrackedFlush() noexcept
 {
-	uint32_t current = pendingSaveFlushes.load(std::memory_order_acquire);
-	while (current != 0) {
-		if (pendingSaveFlushes.compare_exchange_weak(current, current - 1, std::memory_order_acq_rel)) {
-			if (current == 1) {
-				saving.store(false, std::memory_order_release);
-			}
-			return;
+	uint32_t prev = pendingSaveFlushes.fetch_sub(1, std::memory_order_acq_rel);
+	if (prev == 0) {
+		pendingSaveFlushes.fetch_add(1, std::memory_order_relaxed);
+		LOG_ERROR("[SaveManager] completeTrackedFlush underflow detected! begin/complete call mismatch.");
+		saving.store(false, std::memory_order_release);
+		return;
+	}
+	if (prev == 1) {
+		saving.store(false, std::memory_order_release);
+	}
+}
+
+bool SaveManager::savePendingFlushToDB(uint32_t guid, const IOLoginData::PlayerSaveSnapshot& save)
+{
+	// Se recovery falhou para este GUID, nao sobrescrever WAL - exigir intervencao manual
+	if (failedRecoveryGuids.contains(guid)) {
+		LOG_CRITICAL(fmt::format("[SaveManager] Cannot overwrite WAL for guid={}: recovery previously failed. "
+			"Manual intervention required to clear player_save_async_pending entries.", guid));
+		return false;
+	}
+
+	Database& db = Database::getInstance();
+
+	DBTransaction transaction;
+	if (!transaction.begin()) {
+		LOG_ERROR(fmt::format("[SaveManager] Failed to begin WAL transaction for guid={}", guid));
+		return false;
+	}
+
+	if (!db.executeQuery(fmt::format("DELETE FROM `player_save_async_pending` WHERE `guid` = {}", guid))) {
+		LOG_ERROR(fmt::format("[SaveManager] Failed to clear old WAL entries for guid={}", guid));
+		transaction.rollback();
+		return false;
+	}
+
+	for (size_t i = 0; i < save.queries.size(); ++i) {
+		const std::string escaped = db.escapeString(save.queries[i]);
+		if (!db.executeQuery(fmt::format(
+			"INSERT INTO `player_save_async_pending` (`guid`, `query_index`, `query_text`, `created_at`) "
+			"VALUES ({}, {}, {}, UNIX_TIMESTAMP())",
+			guid, i, escaped)))
+		{
+			LOG_ERROR(fmt::format("[SaveManager] Failed to insert WAL entry for guid={}, query_index={}", guid, i));
+			transaction.rollback();
+			return false;
 		}
 	}
 
-	saving.store(false, std::memory_order_release);
+	if (!transaction.commit()) {
+		LOG_ERROR(fmt::format("[SaveManager] Failed to commit WAL transaction for guid={}", guid));
+		return false;
+	}
+
+	return true;
+}
+
+void SaveManager::deletePendingFlushFromDB(uint32_t guid)
+{
+	Database::getInstance().executeQuery(
+		fmt::format("DELETE FROM `player_save_async_pending` WHERE `guid` = {}", guid));
+}
+
+void SaveManager::recoverPendingFlushes()
+{
+	Database& db = Database::getInstance();
+	DBResult_ptr result = db.storeQuery(
+		"SELECT `guid`, `query_index`, `query_text` FROM `player_save_async_pending` ORDER BY `guid`, `query_index`");
+	if (!result) {
+		LOG_INFO(">> [SaveManager] No pending async saves to recover.");
+		return;
+	}
+
+	std::unordered_map<uint32_t, std::vector<std::string>> pendingByGuid;
+	do {
+		const uint32_t guid = result->getNumber<uint32_t>("guid");
+		const std::string query{result->getString("query_text")};
+		pendingByGuid[guid].push_back(std::move(query));
+	} while (result->next());
+
+	for (auto& [guid, queries] : pendingByGuid) {
+		LOG_INFO(fmt::format(">> [SaveManager] Recovering {} pending query(es) for guid={}", queries.size(), guid));
+		bool allOk = true;
+		DBTransaction transaction;
+		if (!transaction.begin()) {
+			LOG_ERROR(fmt::format("[SaveManager] Failed to begin recovery transaction for guid={}", guid));
+			continue;
+		}
+		for (const auto& q : queries) {
+			if (!db.executeQuery(q)) {
+				allOk = false;
+				LOG_ERROR(fmt::format("[SaveManager] Recovery query failed for guid={}: {}", guid, q));
+				break;
+			}
+		}
+		if (allOk) {
+			if (transaction.commit()) {
+				db.executeQuery(fmt::format("DELETE FROM `player_save_async_pending` WHERE `guid` = {}", guid));
+				LOG_INFO(fmt::format(">> [SaveManager] Successfully recovered save for guid={}", guid));
+			} else {
+				transaction.rollback();
+				LOG_ERROR(fmt::format("[SaveManager] Recovery commit failed for guid={}", guid));
+			}
+		} else {
+			transaction.rollback();
+			failedRecoveryGuids.insert(guid);
+			LOG_ERROR(fmt::format("[SaveManager] Recovery failed for guid={}, manual intervention required. "
+				"WAL entries preserved; savePendingFlushToDB will skip this GUID to prevent silent data loss.", guid));
+		}
+	}
 }
 
 void SaveManager::saveMapAsync()

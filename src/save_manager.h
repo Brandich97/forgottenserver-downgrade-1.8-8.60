@@ -6,9 +6,12 @@
 #define FS_SAVE_MANAGER_H
 
 #include <atomic>
+#include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "iologindata.h"
 
@@ -24,12 +27,36 @@ public:
 	void saveMapAsync();
 	bool savePlayerSync(Player* player);
 
+	/**
+	 * @brief Non-blocking: invokes callback(bool) when pending save operations for
+	 * the given GUID have been fully persisted to the database (or on timeout).
+	 *
+	 * Called from the login flow (thread pool worker) before loadPlayerById.
+	 * The callback is delivered on the dispatcher thread. The callback should
+	 * schedule any heavy work (e.g. loadPlayerById) on the thread pool to
+	 * avoid blocking the dispatcher.
+	 */
+	void drainPlayerFlushAsync(uint32_t guid, std::function<void(bool)> callback);
+
+	/**
+	 * @brief Replay any pending async saves that were lost due to a server crash.
+	 * Must be called once during server startup after database is connected.
+	 */
+	void recoverPendingFlushes();
+
 	[[nodiscard]] bool isSaving() const noexcept
 	{
-		return saving.load(std::memory_order_relaxed) || pendingSaveFlushes.load(std::memory_order_relaxed) != 0;
+		return saving.load(std::memory_order_acquire) || pendingSaveFlushes.load(std::memory_order_acquire) != 0;
 	}
-	[[nodiscard]] uint64_t getLastSaveTime() const noexcept { return lastSaveDurationMs.load(std::memory_order_relaxed); }
-	[[nodiscard]] uint32_t getLastPlayerCount() const noexcept { return lastPlayersSaved.load(std::memory_order_relaxed); }
+	[[nodiscard]] uint64_t getLastSaveTime() const noexcept { return lastSaveDurationMs.load(std::memory_order_acquire); }
+	[[nodiscard]] uint32_t getLastPlayerCount() const noexcept { return lastPlayersSaved.load(std::memory_order_acquire); }
+
+	// Returns true if the given GUID's WAL recovery failed at startup;
+	// saves will be rejected and login should be blocked pending manual resolution.
+	[[nodiscard]] bool hasFailedRecovery(uint32_t guid) const noexcept
+	{
+		return failedRecoveryGuids.contains(guid);
+	}
 
 private:
 	struct PendingPlayerFlush
@@ -39,6 +66,8 @@ private:
 		bool trackedBySaveAll = false;
 	};
 
+	using FlushCallback = std::function<void(bool)>;
+
 	// Player state snapshots and flush queue bookkeeping must run on the dispatcher thread.
 	bool schedulePlayerFlush(Player* player, bool trackSaveAll = false);
 	void onPlayerFlushed(uint32_t guid, bool trackedBySaveAll, bool success, IOLoginData::PlayerSaveSnapshot save);
@@ -47,6 +76,10 @@ private:
 	void completeTrackedFlush() noexcept;
 	void dispatchPlayerFlush(uint32_t guid, PendingPlayerFlush pending);
 
+	// WAL helpers for crash-safe async saves
+	bool savePendingFlushToDB(uint32_t guid, const IOLoginData::PlayerSaveSnapshot& save);
+	void deletePendingFlushFromDB(uint32_t guid);
+
 	std::atomic<bool> saving{false};
 	std::atomic<uint32_t> pendingSaveFlushes{0};
 	std::atomic<uint64_t> lastSaveDurationMs{0};
@@ -54,6 +87,13 @@ private:
 	std::atomic<int64_t> lastSaveTimestamp{0};
 	std::unordered_set<uint32_t> flushInFlight;
 	std::unordered_map<uint32_t, PendingPlayerFlush> pendingFlushes;
+
+	// Non-blocking callback registry for login barrier
+	std::unordered_map<uint32_t, std::vector<FlushCallback>> flushChainCallbacks;
+
+	// GUIDs whose WAL recovery failed at startup; savePendingFlushToDB will refuse to
+	// overwrite their WAL entries until manually resolved (prevents silent data loss)
+	std::unordered_set<uint32_t> failedRecoveryGuids;
 
 	static constexpr int64_t MIN_SAVE_INTERVAL_MS = 2000;
 };

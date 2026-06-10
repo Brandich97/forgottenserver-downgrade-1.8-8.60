@@ -76866,4 +76866,11 @@
 	<item id="51747" article="a" name="intricate void scroll">
 		<attribute key="weight" value="250" />
 	</item>
+	<item id="65000" name="QA non-stackable test item">
+		<attribute key="weight" value="100" />
+	</item>
+	<item id="65001" name="QA stackable test coin">
+		<attribute key="weight" value="1" />
+		<attribute key="stackable" value="1" />
+	</item>
 </items>

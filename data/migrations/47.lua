@@ -1,16 +1,14 @@
 function onUpdateDatabase()
-	logMigration("Updating database to version 48 (Expanded blessings 1-8)")
+	logMigration("Updating database to version 48 (WAL table for crash-safe async saves)")
 
-	db.query([[
-		ALTER TABLE `players`
-		ADD COLUMN `blessings1` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings2` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings3` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings4` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings5` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings6` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings7` tinyint unsigned NOT NULL DEFAULT 0,
-		ADD COLUMN `blessings8` tinyint unsigned NOT NULL DEFAULT 0
+	return db.query([[
+		CREATE TABLE IF NOT EXISTS `player_save_async_pending` (
+			`guid` INT NOT NULL,
+			`query_index` INT UNSIGNED NOT NULL,
+			`query_text` LONGBLOB NOT NULL,
+			`created_at` BIGINT NOT NULL,
+			PRIMARY KEY (`guid`, `query_index`),
+			FOREIGN KEY (`guid`) REFERENCES `players`(`id`) ON DELETE CASCADE
+		) ENGINE=InnoDB
 	]])
-	return true
 end

@@ -95,6 +95,7 @@
     <ClCompile Include="..\src\spy.cpp" />
     <ClCompile Include="..\src\zones.cpp" />
     <ClCompile Include="..\src\storeinbox.cpp" />
+    <ClCompile Include="..\src\weapon_proficiency.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\luaactions.cpp">
@@ -307,6 +308,7 @@
     <ClInclude Include="..\src\spy.h" />
     <ClInclude Include="..\src\zones.h" />
     <ClInclude Include="..\src\storeinbox.h" />
+    <ClInclude Include="..\src\weapon_proficiency.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="theforgottenserver.rc" />

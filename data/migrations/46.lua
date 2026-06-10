@@ -1,31 +1,13 @@
 function onUpdateDatabase()
-	logMigration("Updating database to version 46 (Boosted Boss)")
+	logMigration("Updating database to version 47 (Expanded blessings 1-8)")
 
-	local query = [[
-		CREATE TABLE IF NOT EXISTS `boosted_boss` (
-			`boostname` TEXT,
-			`date` varchar(250) NOT NULL DEFAULT '',
-			`raceid` varchar(250) NOT NULL DEFAULT '',
-			`looktype` int(11) NOT NULL DEFAULT "136",
-			`lookfeet` int(11) NOT NULL DEFAULT "0",
-			`looklegs` int(11) NOT NULL DEFAULT "0",
-			`lookhead` int(11) NOT NULL DEFAULT "0",
-			`lookbody` int(11) NOT NULL DEFAULT "0",
-			`lookaddons` int(11) NOT NULL DEFAULT "0",
-			`lookmount` int(11) DEFAULT "0",
-			PRIMARY KEY (`date`)
-		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8
-	]]
-
-	if not db.query(query) then
-		return false
+	-- Add columns individually to avoid failing when columns already exist
+	local blessingColumns = {
+		"blessings1", "blessings2", "blessings3", "blessings4",
+		"blessings5", "blessings6", "blessings7", "blessings8"
+	}
+	for _, col in ipairs(blessingColumns) do
+		db.query("ALTER TABLE `players` ADD COLUMN `" .. col .. "` tinyint unsigned NOT NULL DEFAULT 0")
 	end
-
-	-- Insert default row
-	local insertQuery = [[
-		INSERT IGNORE INTO `boosted_boss` (`date`, `boostname`, `raceid`)
-		VALUES ('0', 'default', '0')
-	]]
-
-	return db.query(insertQuery)
+	return true
 end

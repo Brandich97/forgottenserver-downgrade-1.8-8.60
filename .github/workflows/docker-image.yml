@@ -55,8 +55,23 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build \
-            --pull \
-            --file ./Dockerfile \
-            --tag tfs-linux:latest \
-            .
+          set -e
+          max_attempts=3
+          attempt=0
+          until [ "$attempt" -ge "$max_attempts" ]; do
+            attempt=$((attempt+1))
+            echo "Docker build attempt $attempt/$max_attempts..."
+            if docker build --pull --file ./Dockerfile --tag tfs-linux:latest .; then
+              echo "Docker build succeeded"
+              break
+            fi
+            echo "Docker build failed (attempt $attempt)."
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep_seconds=$(( attempt * 10 ))
+              echo "Retrying in ${sleep_seconds}s..."
+              sleep $sleep_seconds
+            else
+              echo "Docker build failed after $max_attempts attempts"
+              exit 1
+            fi
+          done

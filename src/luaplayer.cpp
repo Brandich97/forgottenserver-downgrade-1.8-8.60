@@ -24,6 +24,7 @@
 
 extern Game g_game;
 extern Vocations g_vocations;
+extern LuaEnvironment g_luaEnvironment;
 
 namespace {
 using namespace Lua;
@@ -2463,6 +2464,59 @@ int luaPlayerSave(lua_State* L)
 	return 1;
 }
 
+int luaPlayerSaveAsync(lua_State* L)
+{
+	// player:saveAsync()
+	Player* player = getUserdata<Player>(L, 1);
+	if (player) {
+		player->setLoginPosition(player->getPosition());
+		pushBoolean(L, g_saveManager.savePlayer(player));
+	} else {
+		lua_pushnil(L);
+	}
+	return 1;
+}
+
+int luaPlayerDrainAsyncSave(lua_State* L)
+{
+	// player:drainAsyncSave(callback)
+	// Non-blocking: invoca callback(true) quando o flush chain para este player completar,
+	// ou callback(false) em caso de timeout.
+	Player* player = getUserdata<Player>(L, 1);
+	if (!player) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	if (lua_gettop(L) < 2 || !lua_isfunction(L, 2)) {
+		lua_pushnil(L);
+		lua_pushstring(L, "callback function expected as second argument");
+		return 2;
+	}
+
+	int32_t cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+	const uint32_t guid = player->getGUID();
+
+	g_saveManager.drainPlayerFlushAsync(guid,
+		[cbRef](bool success) {
+			g_dispatcher.addTask([cbRef, success]() {
+				lua_State* luaState = g_luaEnvironment.getLuaState();
+				if (!luaState) return;
+
+				lua_rawgeti(luaState, LUA_REGISTRYINDEX, cbRef);
+				lua_pushboolean(luaState, success ? 1 : 0);
+				if (lua_pcall(luaState, 1, 0, 0) != LUA_OK) {
+					LOG_ERROR(fmt::format("[luaPlayerDrainAsyncSave] callback error: {}",
+						lua_tostring(luaState, -1)));
+				}
+				luaL_unref(luaState, LUA_REGISTRYINDEX, cbRef);
+			});
+		});
+
+	pushBoolean(L, true);
+	return 1;
+}
+
 int luaPlayerPopupFYI(lua_State* L)
 {
 	// player:popupFYI(message)
@@ -4319,6 +4373,8 @@ void LuaScriptInterface::registerPlayer()
 	registerMethod("Player", "addMapMark", luaPlayerAddMapMark);
 
 	registerMethod("Player", "save", luaPlayerSave);
+	registerMethod("Player", "saveAsync", luaPlayerSaveAsync);
+	registerMethod("Player", "drainAsyncSave", luaPlayerDrainAsyncSave);
 	registerMethod("Player", "popupFYI", luaPlayerPopupFYI);
 
 	registerMethod("Player", "isPzLocked", luaPlayerIsPzLocked);

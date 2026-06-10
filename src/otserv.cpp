@@ -16,6 +16,7 @@
 #include "protocoladmin.h"
 #include "protocolstatus.h"
 #include "rsa.h"
+#include "save_manager.h"
 #include "scheduler.h"
 #include "script.h"
 #include "scriptmanager.h"
@@ -216,6 +217,9 @@ void mainLoader(const std::shared_ptr<ServiceManager>& services)
 	g_databaseTasks.start();
 
 	DatabaseManager::updateDatabase();
+
+	// Recover any pending async saves from a previous crash
+	g_saveManager.recoverPendingFlushes();
 
 	if (getBoolean(ConfigManager::OPTIMIZE_DATABASE) && !DatabaseManager::optimizeTables()) {
 		LOG_INFO(">> No tables were optimized.");
