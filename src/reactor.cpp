@@ -202,7 +202,7 @@ void TaskReactor::drain()
 		runOnce();
 		std::this_thread::yield();
 	}
-	LOG_WARN("[TaskReactor] drain timed out after {} ms — {} tasks may be discarded",
+	LOG_WARN("[TaskReactor] drain timed out after {} ms",
 	         REACTOR_DRAIN_TIMEOUT.count());
 }
 

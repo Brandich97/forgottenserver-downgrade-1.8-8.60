@@ -615,7 +615,7 @@ void runStressTests()
 		return;
 	}
 
-	auto runTests = [&testRunning]() {
+	auto runTests = []() {
 		const int count = getCount();
 		const int threads = getThreads();
 		const bool benchmark = ConfigManager::getBoolean(ConfigManager::STRESS_TEST_BENCHMARK);

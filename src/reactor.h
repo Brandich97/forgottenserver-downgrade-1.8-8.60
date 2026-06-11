@@ -68,7 +68,7 @@ private:
 	void waitForWork();
 	static bool taskComesAfter(const Task& lhs, const Task& rhs) noexcept;
 
-	std::mutex mutex;
+	mutable std::mutex mutex;
 	std::condition_variable conditionVariable;
 
 	std::vector<Task> sendInbox;
